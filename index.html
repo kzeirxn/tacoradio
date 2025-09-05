@@ -100,34 +100,6 @@
             100% { transform: rotate(360deg); }
         }
 
-        /* Styling for the recently played section */
-        #recently-played {
-            max-height: 200px;
-            overflow-y: auto;
-            margin-top: 2rem;
-        }
-
-        #recently-played::-webkit-scrollbar {
-            width: 8px;
-        }
-
-        #recently-played::-webkit-scrollbar-thumb {
-            background-color: rgba(255, 255, 255, 0.2);
-            border-radius: 10px;
-        }
-
-        #recently-played ul li {
-            padding: 0.5rem 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        #recently-played ul li:last-child {
-            border-bottom: none;
-        }
-
         /* Now Playing Bar Styling */
         #now-playing-bar {
             background-color: rgba(255, 255, 255, 0.1);
@@ -210,40 +182,26 @@
     </style>
 
     <!-- Open Graph (OG) and Twitter Card Meta Tags -->
-    <meta property="og:title" content="My Azuracast Radio" id="og-title">
+    <meta property="og:title" content="Taco Radio" id="og-title">
     <meta property="og:description" content="The best tunes, always on." id="og-description">
-    <meta property="og:image" content="https://placehold.co/1200x630/2B6CB0/ffffff?text=My+Azuracast+Radio" id="og-image">
-    <meta property="og:url" content="https://your-radio-url.com">
+    <meta property="og:image" content="https://placehold.co/1200x630/2B6CB0/ffffff?text=Taco+Radio" id="og-image">
+    <meta property="og:url" content="https://radio.tacolicensing.org">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="My Azuracast Radio" id="twitter-title">
+    <meta name="twitter:title" content="Taco Radio" id="twitter-title">
     <meta name="twitter:description" content="The best tunes, always on." id="twitter-description">
-    <meta name="twitter:image" content="https://placehold.co/1200x675/2B6CB0/ffffff?text=My+Azuracast+Radio" id="twitter-image">
+    <meta name="twitter:image" content="https://placehold.co/1200x675/2B6CB0/ffffff?text=Taco+Radio" id="twitter-image">
 </head>
 <body>
     <canvas id="color-analyzer-canvas" style="display:none;"></canvas>
 
     <div id="player-container" class="glass-container">
-        <h1 class="text-5xl font-bold mb-4">My Azuracast Radio</h1>
+        <h1 class="text-5xl font-bold mb-4">Taco Radio</h1>
         <p class="text-lg mb-8">
             The best tunes, always on.
         </p>
 
         <div id="loading-spinner" class="flex justify-center items-center hidden my-8">
             <div class="spinner"></div>
-        </div>
-        
-        <!-- Recently Played Section -->
-        <div id="recently-played-container" class="w-full">
-            <h2 class="text-2xl font-bold mb-2">Recently Played</h2>
-            <div id="recently-played" class="p-2 rounded-lg">
-                <ul id="history-list">
-                    <!-- History items will be dynamically added here -->
-                    <li class="text-sm text-slate-400">No recent history available.</li>
-                </ul>
-            </div>
-            
-            <!-- Listener Count -->
-            <div id="listener-count" class="text-sm mt-4"></div>
         </div>
         
         <!-- Now Playing Bar -->
@@ -297,8 +255,6 @@
             const nowPlayingBar = document.getElementById('now-playing-bar');
             const canvas = document.getElementById('color-analyzer-canvas');
             const ctx = canvas.getContext('2d');
-            const listenerCountElement = document.getElementById('listener-count');
-            const historyList = document.getElementById('history-list');
             const toggleRequestsButton = document.getElementById('toggle-requests-button');
             const requestsIframeContainer = document.getElementById('requests-iframe-container');
 
@@ -375,14 +331,9 @@
                     const data = await response.json();
                     
                     const nowPlayingSong = data.now_playing.song;
-                    const listenerCount = data.listeners.current;
-                    const songHistory = data.song_history;
 
                     // Update now playing info
                     updateStatus(nowPlayingSong.title, nowPlayingSong.artist);
-
-                    // Update listener count
-                    listenerCountElement.textContent = `${listenerCount} listeners`;
 
                     // Update the background image and the album art image element
                     if (nowPlayingSong.art) {
@@ -396,7 +347,7 @@
                         };
                         img.onerror = () => {
                             console.error('Failed to load album art image. Using placeholder.');
-                            body.style.backgroundImage = 'url(https://placehold.co/1200x800/2B6CB0/ffffff?text=My+Azuracast+Radio)';
+                            body.style.backgroundImage = 'url(https://placehold.co/1200x800/2B6CB0/ffffff?text=Taco+Licensing)';
                             albumArtElement.src = 'https://placehold.co/192x192/4F46E5/ffffff?text=No+Art';
                             // Revert to default text color on error
                             playerContainer.style.setProperty('--text-color', '#E2E8F0');
@@ -404,35 +355,11 @@
                         };
                         img.src = nowPlayingSong.art;
                     } else {
-                        body.style.backgroundImage = 'url(https://placehold.co/1200x800/2B6CB0/ffffff?text=My+Azuracast+Radio)';
+                        body.style.backgroundImage = 'url(https://placehold.co/1200x800/2B6CB0/ffffff?text=Taco+Licensing)';
                         albumArtElement.src = 'https://placehold.co/192x192/4F46E5/ffffff?text=No+Art';
                         // Revert to default text color if no art is available
                         playerContainer.style.setProperty('--text-color', '#E2E8F0');
-                        updateMetadata(nowPlayingSong.title, nowPlayingSong.artist, null);
-                    }
-
-                    // Update recently played list
-                    historyList.innerHTML = ''; // Clear previous items
-                    if (songHistory && songHistory.length > 0) {
-                        songHistory.slice(1).forEach(item => { // Slice to ignore the currently playing track
-                            const li = document.createElement('li');
-                            const title = item.song.title || 'Unknown Title';
-                            const artist = item.song.artist || 'Unknown Artist';
-
-                            li.innerHTML = `
-                                <div>
-                                    <div class="font-bold">${title}</div>
-                                    <div class="text-xs text-slate-500">${artist}</div>
-                                </div>
-                            `;
-                            li.classList.add('text-sm', 'text-slate-400', 'hover:text-slate-200', 'transition-colors', 'duration-200', 'flex', 'items-center', 'justify-between');
-                            historyList.appendChild(li);
-                        });
-                    } else {
-                        const li = document.createElement('li');
-                        li.textContent = 'No recent history available.';
-                        li.classList.add('text-sm', 'text-slate-400');
-                        historyList.appendChild(li);
+                        updateMetadata(nowPlayingSong.title, nowPlayingSong.artist, nowPlayingSong.art);
                     }
 
                 } catch (error) {
@@ -496,7 +423,7 @@
                 loadingSpinner.classList.add('hidden');
                 updateStatus('Now playing...');
                 fetchNowPlayingData();
-                setInterval(fetchNowPlayingData, 15000); // Update every 15 seconds
+                setInterval(fetchNowPlayingData, 5000); // Update every 15 seconds
             };
 
             audio.onpause = () => {

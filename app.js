@@ -13,7 +13,11 @@ const $ = (id) => document.getElementById(id);
 const els = {
   app: document.querySelector('.app'),
   play: $('play'),
-  cover: $('cover'),
+  coverA: $('cover-a'),
+  coverB: $('cover-b'),
+  vinylCover: $('vinyl-cover'),
+  meta: $('meta'),
+  themeColor: $('theme-color'),
   title: $('title'),
   artist: $('artist'),
   album: $('album'),
@@ -155,20 +159,147 @@ function currentTrack() {
   return { track: np, history };
 }
 
+// ---- Cover art and colours ----
+
+const BRAND_THEME = { tint1: 'hsl(20 50% 13%)', tint2: 'hsl(16 72% 31%)', accent: 'hsl(24 100% 62%)', ink: '#1A0F09' };
+let coverRequest = '';
+let frontCover = els.coverA;
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+
+function hslToRgb(h, s, l) {
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  return [f(0), f(8), f(4)];
+}
+
+function luminance([r, g, b]) {
+  const lin = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+// The cover's dominant colour and a contrasting second one, found by sorting the pixels
+// of a small thumbnail into hue buckets weighted by how colourful each pixel is
+function coverColors(img) {
+  try {
+    const size = 32;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, size, size);
+    const data = ctx.getImageData(0, 0, size, size).data;
+    const buckets = Array.from({ length: 18 }, () => ({ weight: 0, sat: 0, x: 0, y: 0 }));
+    let total = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const [h, s, l] = rgbToHsl(data[i], data[i + 1], data[i + 2]);
+      const weight = s * Math.max(0, 1 - Math.abs(l - 0.5) * 1.6);
+      if (weight <= 0) continue;
+      const bucket = buckets[Math.floor(h / 20) % 18];
+      bucket.weight += weight;
+      bucket.sat += s * weight;
+      bucket.x += Math.cos((h * Math.PI) / 180) * weight;
+      bucket.y += Math.sin((h * Math.PI) / 180) * weight;
+      total += weight;
+    }
+    if (total < 8) return null; // mostly black, white or grey
+    const ranked = buckets
+      .map((b, i) => ({ ...b, index: i }))
+      .filter((b) => b.weight > 0)
+      .sort((a, b) => b.weight - a.weight);
+    const colour = (b) => [((Math.atan2(b.y, b.x) * 180) / Math.PI + 360) % 360, b.sat / b.weight];
+    const first = ranked[0];
+    // Second colour: the strongest hue at least 40° away from the first
+    const second = ranked.find((b) => {
+      const gap = Math.abs(b.index - first.index);
+      return Math.min(gap, 18 - gap) >= 2 && b.weight > total * 0.08;
+    });
+    return { primary: colour(first), secondary: second ? colour(second) : null };
+  } catch {
+    return null; // cover served without CORS headers: keep the brand colours
+  }
+}
+
+function themeFrom(colors) {
+  if (!colors) return BRAND_THEME;
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const pct = (v) => `${(v * 100).toFixed(0)}%`;
+  const [ph, ps] = colors.primary;
+  const [sh, ss] = colors.secondary || colors.primary;
+  const accentS = clamp(ps * 1.25, 0.55, 0.9);
+  const ink = luminance(hslToRgb(ph, accentS, 0.62)) > 0.3 ? '#140C08' : '#FFFFFF';
+  return {
+    tint1: `hsl(${ph.toFixed(0)} ${pct(clamp(ps, 0.25, 0.6))} 12%)`,
+    tint2: `hsl(${sh.toFixed(0)} ${pct(clamp(ss, 0.4, 0.8))} 32%)`,
+    accent: `hsl(${ph.toFixed(0)} ${pct(accentS)} 62%)`,
+    ink,
+  };
+}
+
+function applyTheme(theme) {
+  const style = els.app.style;
+  style.setProperty('--tint-1', theme.tint1);
+  style.setProperty('--tint-2', theme.tint2);
+  style.setProperty('--accent', theme.accent);
+  style.setProperty('--accent-ink', theme.ink);
+  els.themeColor.setAttribute('content', theme.tint1);
+}
+
+function loadImage(src, cors) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (cors) img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function setCors(img, cors) {
+  if (cors) img.crossOrigin = 'anonymous';
+  else img.removeAttribute('crossorigin');
+}
+
 function setCover(url) {
   const src = url || FALLBACK_COVER;
-  if (els.cover.dataset.src === src) return;
-  els.cover.dataset.src = src;
-  const img = new Image();
-  img.onload = () => {
-    if (els.cover.dataset.src !== src) return;
-    els.cover.src = src;
-    els.app.style.setProperty('--cover', `url("${encodeURI(src)}")`);
-  };
-  img.onerror = () => {
-    if (els.cover.dataset.src === src) els.cover.src = FALLBACK_COVER;
-  };
-  img.src = src;
+  if (coverRequest === src) return;
+  coverRequest = src;
+  // Load with CORS so the colours can be read; fall back to a plain load if that's refused
+  loadImage(src, true)
+    .catch(() => loadImage(src, false))
+    .then((img) => {
+      if (coverRequest !== src) return;
+      const cors = img.crossOrigin === 'anonymous';
+      const back = frontCover === els.coverA ? els.coverB : els.coverA;
+      setCors(back, cors);
+      back.src = src;
+      back.classList.add('is-front');
+      frontCover.classList.remove('is-front');
+      frontCover = back;
+      setCors(els.vinylCover, cors);
+      els.vinylCover.src = src;
+      applyTheme(themeFrom(cors ? coverColors(img) : null));
+    })
+    .catch(() => {
+      if (coverRequest === src && src !== FALLBACK_COVER) {
+        coverRequest = '';
+        setCover(null);
+      }
+    });
 }
 
 function updateMediaSession(track) {
@@ -185,6 +316,9 @@ function updateMediaSession(track) {
 }
 
 function showTrack(track) {
+  els.meta.classList.remove('enter');
+  void els.meta.offsetWidth; // restart the entrance animation
+  els.meta.classList.add('enter');
   els.title.textContent = (track && track.title) || 'Taco Music';
   els.artist.textContent = track ? (track.artist || '') : 'Live radio, 24/7';
   els.album.textContent = (track && track.album) || '';

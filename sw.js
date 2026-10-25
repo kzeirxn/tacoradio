@@ -1,6 +1,6 @@
 // Caches the app itself so it opens instantly and works as an installed app.
 // The stream and the now-playing feed live on another domain and always go to the network.
-const CACHE = 'taco-music-v3';
+const CACHE = 'taco-music-v4';
 const APP_FILES = [
   './',
   './index.html',
@@ -11,6 +11,7 @@ const APP_FILES = [
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png',
+  './fonts/bricolage-grotesque-latin.woff2',
 ];
 
 self.addEventListener('install', (event) => {

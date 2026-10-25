@@ -19,6 +19,7 @@ lower it if they lag behind.
 | `index.html`, `styles.css`, `app.js` | The player |
 | `manifest.webmanifest` | App name, colours and icons for installing |
 | `sw.js` | Service worker: caches the app so it opens instantly and offline |
+| `fonts/` | Bricolage Grotesque, the display font, bundled so it works offline (SIL Open Font License, see `fonts/OFL.txt`) |
 | `icons/` | `logo.svg` is the Taco logo; `icon.svg` and `icon-maskable.svg` put it on the orange background, and the PNGs are rendered from those |
 
 ## Hosting

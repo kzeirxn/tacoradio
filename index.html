@@ -5,8 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Taco Music</title>
   <meta name="description" content="Taco Music: live radio, playing 24/7.">
-  <meta name="theme-color" content="#FFF8EF" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#15100C" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#120C09" id="theme-color">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Taco Music">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -14,18 +13,25 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="preload" href="fonts/bricolage-grotesque-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="app" data-playing="false">
+    <div class="bg" aria-hidden="true">
+      <span class="blob b1"></span>
+      <span class="blob b2"></span>
+      <span class="blob b3"></span>
+    </div>
+
     <header class="topbar">
       <div class="brand">
-        <img src="icons/icon.svg" alt="" width="32" height="32">
+        <img src="icons/icon.svg" alt="" width="36" height="36">
         <span>Taco Music</span>
       </div>
       <div class="status">
-        <span class="live-badge" id="live-badge" data-live="false">Connecting</span>
-        <span class="listeners" id="listeners" title="Listening now">
+        <span class="pill live-badge" id="live-badge" data-live="false">Connecting</span>
+        <span class="pill listeners" id="listeners" title="Listening now">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a8 8 0 0 0-8 8v5a3 3 0 0 0 3 3h1a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H6v-1a6 6 0 0 1 12 0v1h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h1a3 3 0 0 0 3-3v-5a8 8 0 0 0-8-8z"/></svg>
           <span id="listener-count">–</span>
         </span>
@@ -34,13 +40,19 @@
 
     <main class="layout">
       <section class="player" aria-label="Now playing">
-        <div class="art">
-          <img id="cover" src="icons/icon-512.png" alt="" width="512" height="512">
+        <div class="art-wrap">
+          <div class="vinyl" aria-hidden="true">
+            <div class="vinyl-label"><img id="vinyl-cover" src="icons/icon-512.png" alt=""></div>
+          </div>
+          <div class="art">
+            <img class="cover is-front" id="cover-a" src="icons/icon-512.png" alt="" width="512" height="512">
+            <img class="cover" id="cover-b" alt="" width="512" height="512">
+          </div>
         </div>
 
-        <div class="meta">
+        <div class="meta" id="meta">
           <p class="eyebrow">
-            <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
             <span>Now playing</span>
           </p>
           <h1 id="title">Taco Music</h1>
@@ -59,17 +71,17 @@
             <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4.5" height="14" rx="1.2"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.2"/></svg>
             <span class="spinner" aria-hidden="true"></span>
           </button>
-        </div>
 
-        <label class="volume" id="volume-row">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5a1 1 0 0 0 1 1h3l4.4 3.67A1 1 0 0 0 14 18.4V5.6a1 1 0 0 0-1.6-.77L8 8.5H5a1 1 0 0 0-1 1zm12.5-2.3a.75.75 0 0 1 1.06.02 7 7 0 0 1 0 9.56.75.75 0 1 1-1.08-1.04 5.5 5.5 0 0 0 0-7.48.75.75 0 0 1 .02-1.06z"/></svg>
-          <span class="visually-hidden">Volume</span>
-          <input type="range" id="volume" min="0" max="1" step="0.01" value="1">
-        </label>
+          <label class="volume" id="volume-row">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5a1 1 0 0 0 1 1h3l4.4 3.67A1 1 0 0 0 14 18.4V5.6a1 1 0 0 0-1.6-.77L8 8.5H5a1 1 0 0 0-1 1zm12.5-2.3a.75.75 0 0 1 1.06.02 7 7 0 0 1 0 9.56.75.75 0 1 1-1.08-1.04 5.5 5.5 0 0 0 0-7.48.75.75 0 0 1 .02-1.06z"/></svg>
+            <span class="visually-hidden">Volume</span>
+            <input type="range" id="volume" min="0" max="1" step="0.01" value="1">
+          </label>
+        </div>
 
         <p class="notice" id="notice" role="status"></p>
 
-        <button class="install" id="install" type="button" hidden>
+        <button class="pill install" id="install" type="button" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1zM5 19a1 1 0 1 0 0 2h14a1 1 0 1 0 0-2H5z"/></svg>
           Install app
         </button>

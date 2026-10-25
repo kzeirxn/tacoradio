@@ -2,7 +2,11 @@
 
 const STREAM_URL = 'https://icecast.tacogroup.uk/stream';
 const FEED_URL = 'https://icecast.tacogroup.uk/nowplaying/nowplaying.json';
-const LYRICS_API = 'https://lrclib.net/api/search';
+const LRCLIB_API = 'https://lrclib.net/api';
+// LRCLIB asks apps to say who they are
+const LRCLIB_CLIENT = 'Taco Music v1 (https://music.tacogroup.uk)';
+// Lyric timings only fit a recording of the same length (in seconds) as the one playing
+const SYNC_TOLERANCE = 3;
 const LIBRARY_URL = 'https://icecast.tacogroup.uk/nowplaying/library.json';
 const REQUEST_API = 'https://icecast.tacogroup.uk/requests';
 const POLL_MS = 10000;
@@ -365,11 +369,13 @@ function renderProgress(track) {
     els.progress.hidden = true;
     return;
   }
-  const elapsed = Math.min(Math.max(now() - track.started_at - listenDelay, 0), track.duration);
+  const elapsed = Math.min(Math.max(songPosition(track), 0), track.duration);
   els.progress.hidden = false;
   els.fill.style.transform = `scaleX(${elapsed / track.duration})`;
-  els.elapsed.textContent = formatTime(elapsed);
-  els.duration.textContent = formatTime(track.duration);
+  const elapsedText = formatTime(elapsed);
+  const durationText = formatTime(track.duration);
+  if (els.elapsed.textContent !== elapsedText) els.elapsed.textContent = elapsedText;
+  if (els.duration.textContent !== durationText) els.duration.textContent = durationText;
 }
 
 function makeThumb(src) {
@@ -590,8 +596,26 @@ const lyricsCache = new Map();
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 let lyricsLines = [];
 let activeLine = -1;
+let lyricsHasWords = false;
 let lyricsToken = 0;
 let userScrolledUntil = 0;
+
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+// One LRCLIB request. Returns null when nothing matched; waits and retries when it's busy.
+async function lrclib(endpoint, params) {
+  for (let attempt = 1; ; attempt += 1) {
+    const res = await fetch(`${LRCLIB_API}/${endpoint}?${params}`, { headers: { 'Lrclib-Client': LRCLIB_CLIENT } });
+    if (res.ok) return res.json();
+    if (res.status === 404) return null;
+    if ((res.status === 429 || res.status === 503) && attempt < 3) {
+      const wait = Math.min(parseFloat(res.headers.get('Retry-After')) || 1, 10);
+      await sleep(wait * 1000 * (1 + Math.random() * 0.3)); // jitter, as LRCLIB asks
+      continue;
+    }
+    throw new Error(`HTTP ${res.status}`);
+  }
+}
 
 // Drop "(Remastered)", "(feat. …)", "(From …)" and similar so the search can match
 function cleanTitle(title) {
@@ -604,25 +628,40 @@ function cleanTitle(title) {
 async function searchLyrics(artist, title) {
   const params = new URLSearchParams({ track_name: title });
   if (artist) params.set('artist_name', artist);
-  const res = await fetch(`${LYRICS_API}?${params}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const results = await res.json();
+  const results = await lrclib('search', params);
   return Array.isArray(results) ? results : [];
 }
 
-function pickLyrics(results, duration) {
-  // Prefer the version whose length is closest to ours: different edits have different timings
-  const gap = (r) => (duration && r.duration ? Math.abs(r.duration - duration) : 999);
-  const usable = results
-    .filter((r) => r.syncedLyrics || r.plainLyrics || r.instrumental)
-    .sort((a, b) => gap(a) - gap(b));
-  const close = usable.filter((r) => gap(r) <= 8);
-  for (const pool of [close, usable]) {
-    const synced = pool.find((r) => r.syncedLyrics);
-    if (synced) return synced;
-    if (pool.length) return pool[0];
+const msToSeconds = (ms) => (Number.isInteger(ms) && ms >= 0 ? ms / 1000 : null);
+
+// Lyricsfile (https://lrclib.net/lyricsfile): YAML with line timings and, for some songs,
+// timings for each word. Returns null if it's missing or not something we can read.
+function parseLyricsfile(text) {
+  if (!text || !window.jsyaml) return null;
+  let doc;
+  try {
+    doc = window.jsyaml.load(text, { schema: window.jsyaml.CORE_SCHEMA });
+  } catch {
+    return null;
   }
-  return null;
+  if (!doc || typeof doc !== 'object' || doc.version !== '1.0') return null;
+  const meta = doc.metadata && typeof doc.metadata === 'object' ? doc.metadata : {};
+  const timed = (item) => item && typeof item.text === 'string' && msToSeconds(item.start_ms) !== null;
+  const span = (item) => {
+    const start = msToSeconds(item.start_ms);
+    const end = msToSeconds(item.end_ms);
+    return { text: item.text, start, end: end !== null && end >= start ? end : null };
+  };
+  const lines = (Array.isArray(doc.lines) ? doc.lines : []).filter(timed).map((line) => ({
+    ...span(line),
+    words: (Array.isArray(line.words) ? line.words : []).filter(timed).map(span)
+      .sort((a, b) => a.start - b.start),
+  }));
+  return {
+    instrumental: meta.instrumental === true,
+    lines: lines.sort((a, b) => a.start - b.start),
+    plain: typeof doc.plain === 'string' && doc.plain.trim() ? doc.plain : null,
+  };
 }
 
 function parseLrc(lrc) {
@@ -630,28 +669,76 @@ function parseLrc(lrc) {
   for (const raw of lrc.split(/\r?\n/)) {
     const stamps = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
     const text = raw.replace(/\[[^\]]*\]/g, '').trim();
-    for (const m of stamps) lines.push({ time: parseInt(m[1], 10) * 60 + parseFloat(m[2]), text });
+    for (const m of stamps) {
+      lines.push({ text, start: parseInt(m[1], 10) * 60 + parseFloat(m[2]), end: null, words: [] });
+    }
   }
-  return lines.sort((a, b) => a.time - b.time);
+  return lines.sort((a, b) => a.start - b.start);
+}
+
+// Everything we need from an LRCLIB record, preferring its Lyricsfile over the older fields
+function readRecord(record) {
+  const file = parseLyricsfile(record.lyricsfile);
+  const lines = file && file.lines.length ? file.lines : parseLrc(record.syncedLyrics || '');
+  const plain = (file && file.plain) || record.plainLyrics || lines.map((line) => line.text).join('\n');
+  return {
+    duration: record.duration,
+    instrumental: !!record.instrumental || !!(file && file.instrumental),
+    lines,
+    plain: plain.trim() ? plain : null,
+  };
+}
+
+// How far a record's length is from the song that's actually playing
+const durationGap = (lyrics, duration) => (duration && lyrics.duration ? Math.abs(lyrics.duration - duration) : Infinity);
+
+function pickLyrics(records, duration) {
+  const usable = records.map(readRecord)
+    .filter((l) => l.lines.length || l.plain || l.instrumental)
+    .sort((a, b) => durationGap(a, duration) - durationGap(b, duration));
+  if (!duration) {
+    // Without the song's length there's nothing to check timings against
+    return usable.find((l) => l.lines.length) || usable[0] || null;
+  }
+  // Timings only fit a recording of the same length, so other versions only get the words
+  const sameLength = usable.filter((l) => durationGap(l, duration) <= SYNC_TOLERANCE);
+  const match = sameLength.find((l) => l.lines.length) || sameLength.find((l) => l.plain) || sameLength[0];
+  if (match) return match;
+  const other = usable.find((l) => l.plain);
+  return other ? { ...other, lines: [], otherVersion: true } : null;
+}
+
+async function lookupLyrics(track) {
+  const duration = track.duration ? Math.round(track.duration) : 0;
+  let exact = null;
+  // The exact match first: LRCLIB only returns lyrics for a recording within 2 s of this length
+  if (track.artist && duration >= 1 && duration <= 3600) {
+    const params = new URLSearchParams({ track_name: track.title, artist_name: track.artist, duration });
+    const record = await lrclib('get', params);
+    exact = record && pickLyrics([record], track.duration);
+    if (exact && (exact.lines.length || exact.instrumental)) return exact;
+  }
+  // Otherwise search, in case another copy of this recording has timings
+  let match = null;
+  try {
+    match = pickLyrics(await searchLyrics(track.artist, track.title), track.duration);
+    const cleaned = cleanTitle(track.title);
+    if ((!match || !match.lines.length) && cleaned && cleaned !== track.title) {
+      const retry = pickLyrics(await searchLyrics(track.artist, cleaned), track.duration);
+      if (retry && (!match || retry.lines.length)) match = retry;
+    }
+  } catch (err) {
+    if (!exact) throw err;
+  }
+  // Untimed lyrics for this exact recording still beat another version's
+  if (exact && (!match || !match.lines.length)) return exact;
+  return match;
 }
 
 function fetchLyrics(track) {
-  const key = `${track.artist}|${track.title}`;
+  const key = `${track.artist}|${track.title}|${Math.round(track.duration || 0)}`;
   if (!lyricsCache.has(key)) {
-    const lookup = (async () => {
-      let match = pickLyrics(await searchLyrics(track.artist, track.title), track.duration);
-      const cleaned = cleanTitle(track.title);
-      if (!match && cleaned && cleaned !== track.title) {
-        match = pickLyrics(await searchLyrics(track.artist, cleaned), track.duration);
-      }
-      if (!match) return { kind: 'none' };
-      if (match.syncedLyrics) {
-        const lines = parseLrc(match.syncedLyrics);
-        if (lines.length) return { kind: 'synced', lines };
-      }
-      if (match.plainLyrics) return { kind: 'plain', text: match.plainLyrics };
-      return { kind: match.instrumental ? 'instrumental' : 'none' };
-    })();
+    const lookup = lookupLyrics(track);
     lyricsCache.set(key, lookup);
     lookup.catch(() => lyricsCache.delete(key)); // let a failed lookup try again next time
   }
@@ -662,9 +749,39 @@ function setLyricsStatus(text) {
   els.lyricsStatus.textContent = text;
 }
 
+// Where in the song listeners are, in seconds, going by the feed's start time and length
+function songPosition(track) {
+  return now() - track.started_at - listenDelay;
+}
+
+// Lines without an end time last until the next line starts, or until the song ends
+function buildLines(lines, songDuration) {
+  return lines.map((line, i) => {
+    const next = lines.slice(i + 1).find((l) => l.start > line.start);
+    const end = line.end ?? (next ? next.start : songDuration || Infinity);
+    const el = document.createElement('p');
+    el.className = 'line';
+    const words = line.words.map((word, j) => {
+      const span = document.createElement('span');
+      span.className = 'word';
+      span.textContent = word.text;
+      const after = line.words[j + 1];
+      return { start: word.start, end: word.end ?? (after ? after.start : end), el: span, fill: -1 };
+    });
+    if (words.length) {
+      el.classList.add('has-words');
+      el.append(...words.map((word) => word.el));
+    } else {
+      el.textContent = line.text || '♪';
+    }
+    return { start: line.start, end, words, el, state: '' };
+  });
+}
+
 async function showLyrics(track) {
   const token = ++lyricsToken;
   lyricsLines = [];
+  lyricsHasWords = false;
   activeLine = -1;
   els.lyrics.replaceChildren();
   els.lyrics.dataset.synced = 'false';
@@ -683,24 +800,24 @@ async function showLyrics(track) {
   }
   if (token !== lyricsToken) return; // the song changed while we were waiting
 
-  if (result.kind === 'none') return setLyricsStatus('No lyrics found for this song.');
-  if (result.kind === 'instrumental') return setLyricsStatus('Instrumental. Enjoy the music.');
-  setLyricsStatus('');
+  if (!result) return setLyricsStatus('No lyrics found for this song.');
+  if (result.instrumental && !result.lines.length && !result.plain) {
+    return setLyricsStatus('Instrumental. Enjoy the music.');
+  }
+  setLyricsStatus(result.otherVersion
+    ? 'Timed lyrics are only available for a different version of this song, so these won’t follow along.'
+    : '');
 
-  if (result.kind === 'synced') {
-    lyricsLines = result.lines.map((line) => {
-      const p = document.createElement('p');
-      p.className = 'line';
-      p.textContent = line.text || '♪';
-      return { time: line.time, el: p };
-    });
+  if (result.lines.length) {
+    lyricsLines = buildLines(result.lines, track.duration);
+    lyricsHasWords = lyricsLines.some((line) => line.words.length);
     els.lyrics.dataset.synced = 'true';
     els.lyrics.append(...lyricsLines.map((line) => line.el));
     syncLyrics();
   } else {
     const plain = document.createElement('div');
     plain.className = 'plain';
-    plain.textContent = result.text;
+    plain.textContent = result.plain;
     els.lyrics.append(plain);
   }
 }
@@ -713,23 +830,59 @@ function scrollToLine(el) {
   });
 }
 
+// Light up each word as it's sung: sung words are solid, the current one fills from the left
+function syncWords(line, t) {
+  for (const word of line.words) {
+    let fill = t >= word.end ? 1 : t <= word.start ? 0 : (t - word.start) / (word.end - word.start);
+    if (reduceMotion) fill = t >= word.start ? 1 : 0;
+    fill = Math.round(fill * 100) / 100;
+    if (fill === word.fill) continue;
+    word.fill = fill;
+    word.el.classList.toggle('sung', fill === 1);
+    word.el.classList.toggle('singing', fill > 0 && fill < 1);
+    if (fill > 0 && fill < 1) word.el.style.setProperty('--fill', `${fill * 100}%`);
+  }
+}
+
 function syncLyrics() {
   const track = shownTrack;
   const timed = lyricsLines.length > 0 && track && track.started_at;
   els.lyrics.classList.toggle('syncing', !!timed);
   if (!timed) return;
-  const elapsed = now() - track.started_at - listenDelay;
-  let index = -1;
-  while (index + 1 < lyricsLines.length && lyricsLines[index + 1].time <= elapsed) index += 1;
-  if (index === activeLine) return;
-  activeLine = index;
+  const t = songPosition(track);
+  let focus = -1;
+  let reached = -1;
+  // Several lines can be active at once when vocals overlap
   lyricsLines.forEach((line, i) => {
-    line.el.classList.toggle('past', i < index);
-    line.el.classList.toggle('active', i === index);
+    const state = t >= line.end ? 'past' : t >= line.start ? 'active' : '';
+    if (state !== line.state) {
+      line.state = state;
+      line.el.classList.toggle('past', state === 'past');
+      line.el.classList.toggle('active', state === 'active');
+    }
+    if (line.words.length) syncWords(line, t);
+    if (state === 'active' && focus < 0) focus = i;
+    if (t >= line.start) reached = i;
   });
+  // Between lines (an instrumental break), stay on the last line that was sung
+  if (focus < 0) focus = reached;
+  if (focus === activeLine) return;
+  activeLine = focus;
   // Follow along, unless the listener has just scrolled the lyrics themselves
-  if (index >= 0 && !els.lyricsPanel.hidden && Date.now() > userScrolledUntil) {
-    scrollToLine(lyricsLines[index].el);
+  if (focus >= 0 && !els.lyricsPanel.hidden && Date.now() > userScrolledUntil) {
+    scrollToLine(lyricsLines[focus].el);
+  }
+}
+
+// The progress bar and lyrics move together, from the same clock: every frame while word-by-word
+// lyrics are on screen, otherwise 4 times a second
+function tick() {
+  try {
+    renderProgress(shownTrack);
+    syncLyrics();
+  } finally {
+    if (lyricsHasWords && !els.lyricsPanel.hidden && !reduceMotion) requestAnimationFrame(tick);
+    else setTimeout(tick, 250);
   }
 }
 
@@ -817,7 +970,7 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) poll();
 });
 setInterval(render, 1000);
-setInterval(syncLyrics, 250);
+tick();
 poll();
 
 // ---- Install as an app ----

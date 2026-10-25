@@ -5,8 +5,13 @@ An installable web player (PWA) for the Taco Music live stream.
 - **Stream:** `https://icecast.tacogroup.uk/stream`
 - **Now playing feed:** `https://icecast.tacogroup.uk/nowplaying/nowplaying.json`
 
-- **Lyrics:** looked up per song from [LRCLIB](https://lrclib.net) (free, no API key). Synced
-  lyrics highlight and scroll along with the song.
+- **Lyrics:** looked up per song from [LRCLIB](https://lrclib.net) (free, no API key), reading
+  each record's [Lyricsfile](https://lrclib.net/lyricsfile) where it has one, with LRC and plain
+  text as fallbacks. Songs with word timings light up word by word; others highlight line by line.
+  Timed lyrics are only used when LRCLIB's recording is within `SYNC_TOLERANCE` seconds of the
+  length the feed gives for the playing file. If only other versions have timings, the words show
+  without following along. Requests identify the app with `LRCLIB_CLIENT` and wait out
+  LRCLIB's `Retry-After` when it's busy.
 
 - **Song requests:** the Request tab searches `https://icecast.tacogroup.uk/nowplaying/library.json`
   and sends requests to `https://icecast.tacogroup.uk/requests`, which queues them in the AutoDJ.
@@ -28,6 +33,7 @@ burst-on-connect (`BURST_SECONDS`). Before playback starts it assumes `DEFAULT_L
 | `index.html`, `styles.css`, `app.js` | The player |
 | `manifest.webmanifest` | App name, colours and icons for installing |
 | `sw.js` | Service worker: caches the app so it opens instantly and offline |
+| `vendor/js-yaml.min.js` | [js-yaml](https://github.com/nodeca/js-yaml) 4.1.0, reads Lyricsfile YAML (MIT License, see `vendor/js-yaml.LICENSE.txt`) |
 | `fonts/` | Bricolage Grotesque, the display font, bundled so it works offline (SIL Open Font License, see `fonts/OFL.txt`) |
 | `icons/` | `logo.svg` is the Taco logo; `icon.svg` and `icon-maskable.svg` put it on the orange background, and the PNGs are rendered from those |
 

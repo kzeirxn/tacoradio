@@ -357,7 +357,6 @@ h1 {
   box-shadow: 0 0 14px var(--accent);
   transform: scaleX(0);
   transform-origin: left;
-  transition: transform 1s linear;
 }
 
 .times {
@@ -547,6 +546,21 @@ h1 {
   opacity: 1;
   transform: scale(1.03);
   text-shadow: 0 0 28px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Word-by-word lyrics: the active line's words light up as they're sung */
+.lyrics.syncing .line.active.has-words {
+  text-shadow: none; /* a text shadow would paint over the filling word */
+  filter: drop-shadow(0 0 22px color-mix(in srgb, var(--accent) 40%, transparent));
+}
+
+.lyrics.syncing .line.active .word { color: color-mix(in srgb, var(--text) 38%, transparent); }
+.lyrics.syncing .line.active .word.sung { color: var(--text); }
+.lyrics.syncing .line.active .word.singing {
+  color: transparent;
+  background: linear-gradient(90deg, var(--text) var(--fill, 0%), color-mix(in srgb, var(--text) 38%, transparent) var(--fill, 0%));
+  -webkit-background-clip: text;
+  background-clip: text;
 }
 
 .plain {

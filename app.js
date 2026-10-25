@@ -4,9 +4,12 @@ const STREAM_URL = 'https://icecast.tacogroup.uk/stream';
 const FEED_URL = 'https://icecast.tacogroup.uk/nowplaying/nowplaying.json';
 const LYRICS_API = 'https://lrclib.net/api/search';
 const POLL_MS = 10000;
-// Listeners hear the stream a couple of seconds behind the feed, so hold new titles
-// (and the lyrics timing) back to match. Raise it if lyrics run ahead of the music.
-const LISTEN_DELAY = 2;
+// Listeners hear the stream a little behind the feed, so titles, progress and lyrics are held
+// back to match. While playing, the delay is measured from the player's buffer; this is the
+// guess used before that. Raise it if lyrics run ahead of the music when not playing.
+const DEFAULT_LISTEN_DELAY = 2;
+// Icecast sends this much audio from just before "now" when a player connects (16 KB at 128 kbps)
+const BURST_SECONDS = 1;
 const FALLBACK_COVER = 'icons/icon-512.png';
 
 const $ = (id) => document.getElementById(id);
@@ -56,8 +59,12 @@ let feed = null;
 let shownKey;
 let shownTrack = null;
 let historySig = '';
+let listenDelay = DEFAULT_LISTEN_DELAY;
+let clockOffset = 0;
+const clockSamples = [];
 
-const now = () => Date.now() / 1000;
+// Server time: this device's clock, corrected using the feed's server_time
+const now = () => Date.now() / 1000 + clockOffset;
 
 function formatTime(seconds) {
   const s = Math.max(0, Math.floor(seconds));
@@ -106,6 +113,18 @@ function stop() {
   setState('idle');
 }
 
+// How far behind the feed this listener is: Icecast's burst plus whatever the player has buffered
+function measureListenDelay() {
+  if (!wantPlaying) {
+    listenDelay = DEFAULT_LISTEN_DELAY;
+    return;
+  }
+  if (audio.paused || !audio.buffered.length) return;
+  const ahead = audio.buffered.end(audio.buffered.length - 1) - audio.currentTime;
+  if (ahead < 0 || ahead > 8) return; // not a sensible reading for a live stream
+  listenDelay = listenDelay * 0.8 + (BURST_SECONDS + ahead) * 0.2; // smooth out jitter
+}
+
 function reconnect() {
   if (!wantPlaying) return;
   setState('loading');
@@ -149,7 +168,7 @@ function currentTrack() {
   const np = feed && feed.now_playing;
   const history = (feed && feed.history) || [];
   if (!np) return { track: null, history };
-  if (np.started_at && now() < np.started_at + LISTEN_DELAY && history[0]) {
+  if (np.started_at && now() < np.started_at + listenDelay && history[0]) {
     // Listeners are still hearing the previous song
     const previous = shownTrack && shownTrack.text === history[0].text
       ? shownTrack
@@ -334,7 +353,7 @@ function renderProgress(track) {
     els.progress.hidden = true;
     return;
   }
-  const elapsed = Math.min(Math.max(now() - track.started_at - LISTEN_DELAY, 0), track.duration);
+  const elapsed = Math.min(Math.max(now() - track.started_at - listenDelay, 0), track.duration);
   els.progress.hidden = false;
   els.fill.style.transform = `scaleX(${elapsed / track.duration})`;
   els.elapsed.textContent = formatTime(elapsed);
@@ -382,6 +401,7 @@ function renderHistory(items) {
 }
 
 function render() {
+  measureListenDelay();
   if (feed) {
     els.live.dataset.live = String(!!feed.live);
     els.live.textContent = feed.live ? 'Live' : 'Off air';
@@ -428,8 +448,12 @@ async function searchLyrics(artist, title) {
 }
 
 function pickLyrics(results, duration) {
-  const usable = results.filter((r) => r.syncedLyrics || r.plainLyrics || r.instrumental);
-  const close = duration ? usable.filter((r) => r.duration && Math.abs(r.duration - duration) <= 8) : [];
+  // Prefer the version whose length is closest to ours: different edits have different timings
+  const gap = (r) => (duration && r.duration ? Math.abs(r.duration - duration) : 999);
+  const usable = results
+    .filter((r) => r.syncedLyrics || r.plainLyrics || r.instrumental)
+    .sort((a, b) => gap(a) - gap(b));
+  const close = usable.filter((r) => gap(r) <= 8);
   for (const pool of [close, usable]) {
     const synced = pool.find((r) => r.syncedLyrics);
     if (synced) return synced;
@@ -531,7 +555,7 @@ function syncLyrics() {
   const timed = lyricsLines.length > 0 && track && track.started_at;
   els.lyrics.classList.toggle('syncing', !!timed);
   if (!timed) return;
-  const elapsed = now() - track.started_at - LISTEN_DELAY;
+  const elapsed = now() - track.started_at - listenDelay;
   let index = -1;
   while (index + 1 < lyricsLines.length && lyricsLines[index + 1].time <= elapsed) index += 1;
   if (index === activeLine) return;
@@ -578,21 +602,45 @@ try {
   if (localStorage.getItem('taco-tab') === 'recent') selectTab('recent');
 } catch { /* storage unavailable */ }
 
+// Line this device's clock up with the server's, using the median of recent readings
+function syncClock(data, sent, received) {
+  if (typeof data.server_time !== 'number') return;
+  // The feed is rewritten every poll_seconds, so on average it's half a poll old
+  const serverNow = data.server_time + (data.poll_seconds || 0) / 2;
+  clockSamples.push(serverNow - (sent + received) / 2);
+  if (clockSamples.length > 9) clockSamples.shift();
+  clockOffset = [...clockSamples].sort((a, b) => a - b)[Math.floor(clockSamples.length / 2)];
+}
+
 async function loadFeed() {
   try {
+    const sent = Date.now() / 1000;
     const res = await fetch(`${FEED_URL}?t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    feed = await res.json();
+    const data = await res.json();
+    syncClock(data, sent, Date.now() / 1000);
+    feed = data;
   } catch {
     if (!feed) els.live.textContent = 'Offline';
   }
   render();
 }
 
+// Check again just after the current song should end, so the next one shows up promptly
+function nextPollMs() {
+  const np = feed && feed.now_playing;
+  if (np && np.started_at && np.duration) {
+    const endsIn = np.started_at + np.duration - now();
+    if (endsIn < -3) return 2000; // overdue: keep checking until the feed moves on
+    if (endsIn < POLL_MS / 1000) return Math.max(500, (endsIn + 1.2) * 1000);
+  }
+  return POLL_MS;
+}
+
 function poll() {
   clearTimeout(pollTimer);
   loadFeed().finally(() => {
-    pollTimer = setTimeout(poll, POLL_MS);
+    pollTimer = setTimeout(poll, nextPollMs());
   });
 }
 

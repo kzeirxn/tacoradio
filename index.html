@@ -76,10 +76,22 @@
         <p class="ios-hint" id="ios-hint" hidden>To install, tap <strong>Share</strong> and then <strong>Add to Home Screen</strong>.</p>
       </section>
 
-      <section class="recent" aria-labelledby="recent-heading">
-        <h2 id="recent-heading">Recently played</h2>
-        <ol class="history" id="history"></ol>
-        <p class="empty" id="history-empty">Songs will show up here as they play.</p>
+      <section class="panel" aria-label="Lyrics and recently played">
+        <div class="tabs" role="tablist">
+          <button class="tab" id="tab-lyrics" type="button" role="tab" aria-selected="true" aria-controls="lyrics-panel">Lyrics</button>
+          <button class="tab" id="tab-recent" type="button" role="tab" aria-selected="false" aria-controls="recent-panel" tabindex="-1">Recently played</button>
+        </div>
+
+        <div class="tab-panel" id="lyrics-panel" role="tabpanel" aria-labelledby="tab-lyrics">
+          <div class="lyrics" id="lyrics" data-synced="false"></div>
+          <p class="lyrics-status" id="lyrics-status">Lyrics will show up here when a song is playing.</p>
+          <p class="credit">Lyrics from <a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a></p>
+        </div>
+
+        <div class="tab-panel" id="recent-panel" role="tabpanel" aria-labelledby="tab-recent" hidden>
+          <ol class="history" id="history"></ol>
+          <p class="empty" id="history-empty">Songs will show up here as they play.</p>
+        </div>
       </section>
     </main>
   </div>

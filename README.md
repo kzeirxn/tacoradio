@@ -5,7 +5,12 @@ An installable web player (PWA) for the Taco Music live stream.
 - **Stream:** `https://icecast.tacogroup.uk/stream`
 - **Now playing feed:** `https://icecast.tacogroup.uk/nowplaying/nowplaying.json`
 
-Both addresses are set at the top of `app.js`.
+- **Lyrics:** looked up per song from [LRCLIB](https://lrclib.net) (free, no API key). Synced
+  lyrics highlight and scroll along with the song.
+
+These are set at the top of `app.js`, along with `LISTEN_DELAY`: how many seconds listeners
+hear the stream behind the feed. Raise it if titles and lyrics run ahead of the music, and
+lower it if they lag behind.
 
 ## Files
 

@@ -2,9 +2,11 @@
 
 const STREAM_URL = 'https://icecast.tacogroup.uk/stream';
 const FEED_URL = 'https://icecast.tacogroup.uk/nowplaying/nowplaying.json';
+const LYRICS_API = 'https://lrclib.net/api/search';
 const POLL_MS = 10000;
-// Listeners hear the stream a few seconds behind the feed, so hold new titles back to match.
-const LISTEN_DELAY = 4;
+// Listeners hear the stream a couple of seconds behind the feed, so hold new titles
+// (and the lyrics timing) back to match. Raise it if lyrics run ahead of the music.
+const LISTEN_DELAY = 2;
 const FALLBACK_COVER = 'icons/icon-512.png';
 
 const $ = (id) => document.getElementById(id);
@@ -23,6 +25,12 @@ const els = {
   listeners: $('listener-count'),
   history: $('history'),
   historyEmpty: $('history-empty'),
+  lyrics: $('lyrics'),
+  lyricsStatus: $('lyrics-status'),
+  lyricsPanel: $('lyrics-panel'),
+  recentPanel: $('recent-panel'),
+  tabLyrics: $('tab-lyrics'),
+  tabRecent: $('tab-recent'),
   notice: $('notice'),
   volume: $('volume'),
   volumeRow: $('volume-row'),
@@ -42,6 +50,7 @@ let retryTimer = null;
 let pollTimer = null;
 let feed = null;
 let shownKey;
+let shownTrack = null;
 let historySig = '';
 
 const now = () => Date.now() / 1000;
@@ -138,7 +147,10 @@ function currentTrack() {
   if (!np) return { track: null, history };
   if (np.started_at && now() < np.started_at + LISTEN_DELAY && history[0]) {
     // Listeners are still hearing the previous song
-    return { track: { ...history[0], started_at: null, duration: null }, history: history.slice(1) };
+    const previous = shownTrack && shownTrack.text === history[0].text
+      ? shownTrack
+      : { ...history[0], started_at: null, duration: null };
+    return { track: previous, history: history.slice(1) };
   }
   return { track: np, history };
 }
@@ -244,12 +256,193 @@ function render() {
   const { track, history } = currentTrack();
   const key = track ? `${track.text}|${track.started_at}` : null;
   if (key !== shownKey) {
+    const sameSong = shownTrack && track && shownTrack.text === track.text;
     shownKey = key;
+    shownTrack = track;
     showTrack(track);
+    if (!sameSong) showLyrics(track);
   }
   renderProgress(track);
   renderHistory(history);
+  syncLyrics();
 }
+
+// ---- Lyrics ----
+
+const lyricsCache = new Map();
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let lyricsLines = [];
+let activeLine = -1;
+let lyricsToken = 0;
+let userScrolledUntil = 0;
+
+// Drop "(Remastered)", "(feat. …)", "(From …)" and similar so the search can match
+function cleanTitle(title) {
+  return title
+    .replace(/\s*[([][^)\]]*(remaster|remix|live|version|edit|mono|stereo|from |feat\.?|ft\.|with )[^)\]]*[)\]]/gi, '')
+    .replace(/\s+-\s+.*(remaster|version|edit|live).*$/i, '')
+    .trim();
+}
+
+async function searchLyrics(artist, title) {
+  const params = new URLSearchParams({ track_name: title });
+  if (artist) params.set('artist_name', artist);
+  const res = await fetch(`${LYRICS_API}?${params}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const results = await res.json();
+  return Array.isArray(results) ? results : [];
+}
+
+function pickLyrics(results, duration) {
+  const usable = results.filter((r) => r.syncedLyrics || r.plainLyrics || r.instrumental);
+  const close = duration ? usable.filter((r) => r.duration && Math.abs(r.duration - duration) <= 8) : [];
+  for (const pool of [close, usable]) {
+    const synced = pool.find((r) => r.syncedLyrics);
+    if (synced) return synced;
+    if (pool.length) return pool[0];
+  }
+  return null;
+}
+
+function parseLrc(lrc) {
+  const lines = [];
+  for (const raw of lrc.split(/\r?\n/)) {
+    const stamps = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
+    const text = raw.replace(/\[[^\]]*\]/g, '').trim();
+    for (const m of stamps) lines.push({ time: parseInt(m[1], 10) * 60 + parseFloat(m[2]), text });
+  }
+  return lines.sort((a, b) => a.time - b.time);
+}
+
+function fetchLyrics(track) {
+  const key = `${track.artist}|${track.title}`;
+  if (!lyricsCache.has(key)) {
+    const lookup = (async () => {
+      let match = pickLyrics(await searchLyrics(track.artist, track.title), track.duration);
+      const cleaned = cleanTitle(track.title);
+      if (!match && cleaned && cleaned !== track.title) {
+        match = pickLyrics(await searchLyrics(track.artist, cleaned), track.duration);
+      }
+      if (!match) return { kind: 'none' };
+      if (match.syncedLyrics) {
+        const lines = parseLrc(match.syncedLyrics);
+        if (lines.length) return { kind: 'synced', lines };
+      }
+      if (match.plainLyrics) return { kind: 'plain', text: match.plainLyrics };
+      return { kind: match.instrumental ? 'instrumental' : 'none' };
+    })();
+    lyricsCache.set(key, lookup);
+    lookup.catch(() => lyricsCache.delete(key)); // let a failed lookup try again next time
+  }
+  return lyricsCache.get(key);
+}
+
+function setLyricsStatus(text) {
+  els.lyricsStatus.textContent = text;
+}
+
+async function showLyrics(track) {
+  const token = ++lyricsToken;
+  lyricsLines = [];
+  activeLine = -1;
+  els.lyrics.replaceChildren();
+  els.lyrics.dataset.synced = 'false';
+  els.lyrics.scrollTop = 0;
+  if (!track || !track.title) {
+    setLyricsStatus('Lyrics will show up here when a song is playing.');
+    return;
+  }
+  setLyricsStatus('Finding lyrics…');
+  let result;
+  try {
+    result = await fetchLyrics(track);
+  } catch {
+    if (token === lyricsToken) setLyricsStatus('Couldn’t load lyrics right now.');
+    return;
+  }
+  if (token !== lyricsToken) return; // the song changed while we were waiting
+
+  if (result.kind === 'none') return setLyricsStatus('No lyrics found for this song.');
+  if (result.kind === 'instrumental') return setLyricsStatus('Instrumental. Enjoy the music.');
+  setLyricsStatus('');
+
+  if (result.kind === 'synced') {
+    lyricsLines = result.lines.map((line) => {
+      const p = document.createElement('p');
+      p.className = 'line';
+      p.textContent = line.text || '♪';
+      return { time: line.time, el: p };
+    });
+    els.lyrics.dataset.synced = 'true';
+    els.lyrics.append(...lyricsLines.map((line) => line.el));
+    syncLyrics();
+  } else {
+    const plain = document.createElement('div');
+    plain.className = 'plain';
+    plain.textContent = result.text;
+    els.lyrics.append(plain);
+  }
+}
+
+function scrollToLine(el) {
+  const box = els.lyrics;
+  box.scrollTo({
+    top: el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2,
+    behavior: reduceMotion ? 'auto' : 'smooth',
+  });
+}
+
+function syncLyrics() {
+  const track = shownTrack;
+  const timed = lyricsLines.length > 0 && track && track.started_at;
+  els.lyrics.classList.toggle('syncing', !!timed);
+  if (!timed) return;
+  const elapsed = now() - track.started_at - LISTEN_DELAY;
+  let index = -1;
+  while (index + 1 < lyricsLines.length && lyricsLines[index + 1].time <= elapsed) index += 1;
+  if (index === activeLine) return;
+  activeLine = index;
+  lyricsLines.forEach((line, i) => {
+    line.el.classList.toggle('past', i < index);
+    line.el.classList.toggle('active', i === index);
+  });
+  // Follow along, unless the listener has just scrolled the lyrics themselves
+  if (index >= 0 && !els.lyricsPanel.hidden && Date.now() > userScrolledUntil) {
+    scrollToLine(lyricsLines[index].el);
+  }
+}
+
+for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+  els.lyrics.addEventListener(type, () => { userScrolledUntil = Date.now() + 6000; }, { passive: true });
+}
+
+// ---- Tabs ----
+
+function selectTab(name) {
+  const lyrics = name === 'lyrics';
+  els.tabLyrics.setAttribute('aria-selected', String(lyrics));
+  els.tabRecent.setAttribute('aria-selected', String(!lyrics));
+  els.tabLyrics.tabIndex = lyrics ? 0 : -1;
+  els.tabRecent.tabIndex = lyrics ? -1 : 0;
+  els.lyricsPanel.hidden = !lyrics;
+  els.recentPanel.hidden = lyrics;
+  try { localStorage.setItem('taco-tab', name); } catch { /* storage unavailable */ }
+  if (lyrics && activeLine >= 0) scrollToLine(lyricsLines[activeLine].el);
+}
+
+els.tabLyrics.addEventListener('click', () => selectTab('lyrics'));
+els.tabRecent.addEventListener('click', () => selectTab('recent'));
+for (const tab of [els.tabLyrics, els.tabRecent]) {
+  tab.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    const next = tab === els.tabLyrics ? els.tabRecent : els.tabLyrics;
+    selectTab(next === els.tabLyrics ? 'lyrics' : 'recent');
+    next.focus();
+  });
+}
+try {
+  if (localStorage.getItem('taco-tab') === 'recent') selectTab('recent');
+} catch { /* storage unavailable */ }
 
 async function loadFeed() {
   try {
@@ -273,6 +466,7 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) poll();
 });
 setInterval(render, 1000);
+setInterval(syncLyrics, 250);
 poll();
 
 // ---- Install as an app ----

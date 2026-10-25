@@ -54,6 +54,7 @@
           <p class="eyebrow">
             <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
             <span>Now playing</span>
+            <span class="chip" id="requested-chip" hidden>Requested</span>
           </p>
           <h1 id="title">Taco Music</h1>
           <p class="artist" id="artist">Live radio, 24/7</p>
@@ -88,16 +89,33 @@
         <p class="ios-hint" id="ios-hint" hidden>To install, tap <strong>Share</strong> and then <strong>Add to Home Screen</strong>.</p>
       </section>
 
-      <section class="panel" aria-label="Lyrics and recently played">
+      <section class="panel" aria-label="Lyrics, song requests and recently played">
         <div class="tabs" role="tablist">
           <button class="tab" id="tab-lyrics" type="button" role="tab" aria-selected="true" aria-controls="lyrics-panel">Lyrics</button>
-          <button class="tab" id="tab-recent" type="button" role="tab" aria-selected="false" aria-controls="recent-panel" tabindex="-1">Recently played</button>
+          <button class="tab" id="tab-request" type="button" role="tab" aria-selected="false" aria-controls="request-panel" tabindex="-1">Request</button>
+          <button class="tab" id="tab-recent" type="button" role="tab" aria-selected="false" aria-controls="recent-panel" tabindex="-1">Recent</button>
         </div>
 
         <div class="tab-panel" id="lyrics-panel" role="tabpanel" aria-labelledby="tab-lyrics">
           <div class="lyrics" id="lyrics" data-synced="false"></div>
           <p class="lyrics-status" id="lyrics-status">Lyrics will show up here when a song is playing.</p>
           <p class="credit">Lyrics from <a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a></p>
+        </div>
+
+        <div class="tab-panel" id="request-panel" role="tabpanel" aria-labelledby="tab-request" hidden>
+          <h2 class="section-title">Up next</h2>
+          <ol class="history" id="queue"></ol>
+          <p class="empty" id="queue-empty">No requests yet. Pick a song below and it’ll play next.</p>
+
+          <h2 class="section-title">Request a song</h2>
+          <label class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 3a7.5 7.5 0 0 1 5.96 12.06l4.24 4.24a1 1 0 0 1-1.41 1.41l-4.24-4.24A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"/></svg>
+            <span class="visually-hidden">Search songs</span>
+            <input type="search" id="song-search" placeholder="Search songs or artists" autocomplete="off" enterkeyhint="search">
+          </label>
+          <p class="request-status" id="request-status" role="status"></p>
+          <ul class="history songs" id="songs"></ul>
+          <p class="empty" id="songs-empty" hidden>No songs match that search.</p>
         </div>
 
         <div class="tab-panel" id="recent-panel" role="tabpanel" aria-labelledby="tab-recent" hidden>

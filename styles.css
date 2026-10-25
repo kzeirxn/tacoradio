@@ -626,6 +626,102 @@ h1 {
   color: var(--muted);
 }
 
+/* ---- Song requests ---- */
+
+.chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+}
+
+.section-title {
+  margin: 8px 0 10px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.section-title ~ .section-title { margin-top: 24px; }
+
+.queue-tag {
+  font-size: 0.74rem;
+  font-weight: 800;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--faint);
+  transition: border-color 0.2s ease;
+}
+
+.search:focus-within { border-color: color-mix(in srgb, var(--accent) 65%, transparent); }
+.search svg { flex: none; width: 18px; height: 18px; fill: currentColor; }
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 16px; /* stops iPhones zooming in on focus */
+}
+
+.search input::placeholder { color: var(--faint); }
+
+.request-status {
+  margin: 10px 2px 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.request-status:empty { display: none; }
+.request-status[data-tone="success"] { color: var(--text); font-weight: 650; }
+.request-status[data-tone="error"] { color: #FF9A8F; }
+
+.songs {
+  max-height: min(50vh, 460px);
+  margin-top: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.request-btn {
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.15s var(--ease), background-color 1.4s ease;
+}
+
+.request-btn:hover:not(:disabled) { transform: scale(1.05); }
+.request-btn:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+.request-btn:disabled {
+  background: var(--glass-strong);
+  color: var(--faint);
+  cursor: default;
+}
+
 /* ---- Wider screens ---- */
 
 @media (min-width: 900px) {
@@ -657,6 +753,7 @@ h1 {
 
   .panel { max-width: none; }
   .lyrics { max-height: calc(100dvh - 230px); }
+  .songs { max-height: max(240px, calc(100dvh - 520px)); }
   .line { font-size: 1.95rem; }
   .tab-panel { padding: 4px 32px 24px; }
 }

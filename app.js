@@ -3,6 +3,8 @@
 const STREAM_URL = 'https://icecast.tacogroup.uk/stream';
 const FEED_URL = 'https://icecast.tacogroup.uk/nowplaying/nowplaying.json';
 const LYRICS_API = 'https://lrclib.net/api/search';
+const LIBRARY_URL = 'https://icecast.tacogroup.uk/nowplaying/library.json';
+const REQUEST_API = 'https://icecast.tacogroup.uk/requests';
 const POLL_MS = 10000;
 // Listeners hear the stream a little behind the feed, so titles, progress and lyrics are held
 // back to match. While playing, the delay is measured from the player's buffer; this is the
@@ -37,7 +39,16 @@ const els = {
   lyricsPanel: $('lyrics-panel'),
   recentPanel: $('recent-panel'),
   tabLyrics: $('tab-lyrics'),
+  tabRequest: $('tab-request'),
   tabRecent: $('tab-recent'),
+  requestPanel: $('request-panel'),
+  requestedChip: $('requested-chip'),
+  queue: $('queue'),
+  queueEmpty: $('queue-empty'),
+  songSearch: $('song-search'),
+  songs: $('songs'),
+  songsEmpty: $('songs-empty'),
+  requestStatus: $('request-status'),
   notice: $('notice'),
   volume: $('volume'),
   volumeRow: $('volume-row'),
@@ -341,6 +352,7 @@ function showTrack(track) {
   els.title.textContent = (track && track.title) || 'Taco Music';
   els.artist.textContent = track ? (track.artist || '') : 'Live radio, 24/7';
   els.album.textContent = (track && track.album) || '';
+  els.requestedChip.hidden = !(track && track.requested);
   setCover(track && track.cover);
   document.title = track
     ? `${track.title}${track.artist ? ` – ${track.artist}` : ''} · Taco Music`
@@ -360,19 +372,20 @@ function renderProgress(track) {
   els.duration.textContent = formatTime(track.duration);
 }
 
-function historyItem(item) {
-  const li = document.createElement('li');
-
+function makeThumb(src) {
   const img = document.createElement('img');
   img.className = 'thumb';
   img.alt = '';
   img.loading = 'lazy';
-  img.src = item.cover || FALLBACK_COVER;
+  img.src = src || FALLBACK_COVER;
   img.onerror = () => {
     img.onerror = null;
     img.src = FALLBACK_COVER;
   };
+  return img;
+}
 
+function makeText(item) {
   const text = document.createElement('div');
   text.className = 'h-text';
   const title = document.createElement('span');
@@ -382,12 +395,15 @@ function historyItem(item) {
   artist.className = 'h-artist';
   artist.textContent = item.artist || '';
   text.append(title, artist);
+  return text;
+}
 
+function historyItem(item) {
+  const li = document.createElement('li');
   const time = document.createElement('time');
   time.textContent = timeAgo(item.played_at);
   if (item.played_at) time.dateTime = new Date(item.played_at * 1000).toISOString();
-
-  li.append(img, text, time);
+  li.append(makeThumb(item.cover), makeText(item), time);
   return li;
 }
 
@@ -418,8 +434,155 @@ function render() {
   }
   renderProgress(track);
   renderHistory(history);
+  renderQueue();
+  updateRequestButtons();
   syncLyrics();
 }
+
+// ---- Song requests ----
+
+let library = null;
+let libraryLoading = null;
+let requestBusy = false;
+let requestUntil = 0; // when this listener may request again (ms)
+let statusHoldUntil = 0; // keep a success/error message up until then (ms)
+let queueSig = '';
+let buttonsSig = '';
+const songRows = new Map(); // song id -> { song, li, button, search }
+
+try {
+  requestUntil = Number(localStorage.getItem('taco-request-until')) || 0;
+} catch { /* storage unavailable */ }
+
+const songText = (song) => (song.artist ? `${song.artist} - ${song.title}` : song.title);
+const normalize = (text) => (text || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+function setRequestStatus(text, tone = '') {
+  els.requestStatus.textContent = text;
+  els.requestStatus.dataset.tone = tone;
+}
+
+function setRequestUntil(ms) {
+  requestUntil = ms;
+  try { localStorage.setItem('taco-request-until', String(ms)); } catch { /* storage unavailable */ }
+}
+
+function renderQueue() {
+  const items = (feed && feed.requests) || [];
+  const sig = items.map((r) => r.id).join('|');
+  if (sig === queueSig) return;
+  queueSig = sig;
+  els.queue.replaceChildren(...items.map((item, i) => {
+    const li = document.createElement('li');
+    const tag = document.createElement('span');
+    tag.className = 'queue-tag';
+    tag.textContent = i === 0 ? 'Next' : `#${i + 1}`;
+    li.append(makeThumb(item.cover), makeText(item), tag);
+    return li;
+  }));
+  els.queueEmpty.hidden = items.length > 0;
+}
+
+function updateRequestButtons() {
+  const waitMs = requestUntil - Date.now();
+  if (Date.now() > statusHoldUntil) {
+    setRequestStatus(waitMs > 0 ? `You can request another song in ${formatTime(waitMs / 1000)}.` : '');
+  }
+  if (!songRows.size) return;
+  const queued = new Set(((feed && feed.requests) || []).map((r) => r.id));
+  const playing = shownTrack && shownTrack.text;
+  const sig = `${[...queued].join(',')}|${playing}|${waitMs > 0}|${requestBusy}`;
+  if (sig === buttonsSig) return;
+  buttonsSig = sig;
+  for (const [id, row] of songRows) {
+    let label = 'Request';
+    if (queued.has(id)) label = 'Queued';
+    else if (songText(row.song) === playing) label = 'Playing';
+    row.button.textContent = label;
+    row.button.disabled = label !== 'Request' || waitMs > 0 || requestBusy;
+  }
+}
+
+function filterSongs() {
+  const words = normalize(els.songSearch.value).split(/\s+/).filter(Boolean);
+  let shown = 0;
+  for (const row of songRows.values()) {
+    const match = words.every((word) => row.search.includes(word));
+    row.li.hidden = !match;
+    if (match) shown += 1;
+  }
+  els.songsEmpty.hidden = shown > 0 || !library;
+}
+
+function buildSongList() {
+  songRows.clear();
+  buttonsSig = '';
+  els.songs.replaceChildren(...library.map((song) => {
+    const li = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'request-btn';
+    button.textContent = 'Request';
+    button.setAttribute('aria-label', `Request ${song.title}${song.artist ? ` by ${song.artist}` : ''}`);
+    button.addEventListener('click', () => requestSong(song));
+    li.append(makeThumb(song.cover), makeText(song), button);
+    songRows.set(song.id, { song, li, button, search: normalize(`${song.title} ${song.artist} ${song.album}`) });
+    return li;
+  }));
+  filterSongs();
+  updateRequestButtons();
+}
+
+function loadLibrary() {
+  if (!libraryLoading) {
+    libraryLoading = (async () => {
+      try {
+        // The list only changes when songs are added, so refetch at most every 10 minutes
+        const res = await fetch(`${LIBRARY_URL}?v=${Math.floor(Date.now() / 600000)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        library = (await res.json()).songs || [];
+        buildSongList();
+      } catch {
+        libraryLoading = null; // try again next time the tab opens
+        statusHoldUntil = Date.now() + 8000;
+        setRequestStatus('Couldn’t load the song list. Try again in a moment.', 'error');
+      }
+    })();
+  }
+  return libraryLoading;
+}
+
+async function requestSong(song) {
+  if (requestBusy) return;
+  requestBusy = true;
+  statusHoldUntil = Infinity;
+  setRequestStatus(`Requesting “${song.title}”…`);
+  updateRequestButtons();
+  try {
+    const res = await fetch(REQUEST_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ song_id: song.id }),
+    });
+    const reply = await res.json().catch(() => ({}));
+    if (res.ok && reply.ok) {
+      setRequestStatus(reply.message || 'Requested!', 'success');
+      setRequestUntil(Date.now() + (reply.cooldown_seconds || 180) * 1000);
+      if (feed && reply.requests) feed.requests = reply.requests;
+    } else {
+      if (reply.retry_after) setRequestUntil(Date.now() + reply.retry_after * 1000);
+      setRequestStatus(reply.error || 'That didn’t work. Try again in a moment.', 'error');
+    }
+  } catch {
+    setRequestStatus('Couldn’t reach the request service. Try again in a moment.', 'error');
+  } finally {
+    requestBusy = false;
+    statusHoldUntil = Date.now() + 6000;
+    render();
+  }
+}
+
+els.songSearch.addEventListener('input', filterSongs);
 
 // ---- Lyrics ----
 
@@ -576,30 +739,36 @@ for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
 
 // ---- Tabs ----
 
+const tabs = [
+  { name: 'lyrics', tab: els.tabLyrics, panel: els.lyricsPanel },
+  { name: 'request', tab: els.tabRequest, panel: els.requestPanel },
+  { name: 'recent', tab: els.tabRecent, panel: els.recentPanel },
+];
+
 function selectTab(name) {
-  const lyrics = name === 'lyrics';
-  els.tabLyrics.setAttribute('aria-selected', String(lyrics));
-  els.tabRecent.setAttribute('aria-selected', String(!lyrics));
-  els.tabLyrics.tabIndex = lyrics ? 0 : -1;
-  els.tabRecent.tabIndex = lyrics ? -1 : 0;
-  els.lyricsPanel.hidden = !lyrics;
-  els.recentPanel.hidden = lyrics;
+  for (const t of tabs) {
+    const selected = t.name === name;
+    t.tab.setAttribute('aria-selected', String(selected));
+    t.tab.tabIndex = selected ? 0 : -1;
+    t.panel.hidden = !selected;
+  }
   try { localStorage.setItem('taco-tab', name); } catch { /* storage unavailable */ }
-  if (lyrics && activeLine >= 0) scrollToLine(lyricsLines[activeLine].el);
+  if (name === 'lyrics' && activeLine >= 0) scrollToLine(lyricsLines[activeLine].el);
+  if (name === 'request') loadLibrary();
 }
 
-els.tabLyrics.addEventListener('click', () => selectTab('lyrics'));
-els.tabRecent.addEventListener('click', () => selectTab('recent'));
-for (const tab of [els.tabLyrics, els.tabRecent]) {
-  tab.addEventListener('keydown', (event) => {
+tabs.forEach((t, i) => {
+  t.tab.addEventListener('click', () => selectTab(t.name));
+  t.tab.addEventListener('keydown', (event) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-    const next = tab === els.tabLyrics ? els.tabRecent : els.tabLyrics;
-    selectTab(next === els.tabLyrics ? 'lyrics' : 'recent');
-    next.focus();
+    const next = tabs[(i + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    selectTab(next.name);
+    next.tab.focus();
   });
-}
+});
 try {
-  if (localStorage.getItem('taco-tab') === 'recent') selectTab('recent');
+  const saved = localStorage.getItem('taco-tab');
+  if (tabs.some((t) => t.name === saved)) selectTab(saved);
 } catch { /* storage unavailable */ }
 
 // Line this device's clock up with the server's, using the median of recent readings

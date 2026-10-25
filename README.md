@@ -8,6 +8,12 @@ An installable web player (PWA) for the Taco Music live stream.
 - **Lyrics:** looked up per song from [LRCLIB](https://lrclib.net) (free, no API key). Synced
   lyrics highlight and scroll along with the song.
 
+- **Song requests:** the Request tab searches `https://icecast.tacogroup.uk/nowplaying/library.json`
+  and sends requests to `https://icecast.tacogroup.uk/requests`, which queues them in the AutoDJ.
+  Upcoming requests come back in the feed's `requests` list. The server enforces the rules
+  (a wait between requests per listener, no duplicates, nothing played in the last 30 minutes,
+  and a maximum queue length).
+
 These are set at the top of `app.js`.
 
 **Keeping lyrics and the progress bar in time:** the feed gives each song's start time and the

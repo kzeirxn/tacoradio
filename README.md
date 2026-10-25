@@ -19,7 +19,7 @@ lower it if they lag behind.
 | `index.html`, `styles.css`, `app.js` | The player |
 | `manifest.webmanifest` | App name, colours and icons for installing |
 | `sw.js` | Service worker: caches the app so it opens instantly and offline |
-| `icons/` | App icons (`icon.svg` is the source; the PNGs are rendered from it) |
+| `icons/` | `logo.svg` is the Taco logo; `icon.svg` and `icon-maskable.svg` put it on the orange background, and the PNGs are rendered from those |
 
 ## Hosting
 

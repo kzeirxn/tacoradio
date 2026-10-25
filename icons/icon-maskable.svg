@@ -6,23 +6,5 @@
     </linearGradient>
   </defs>
   <rect width="512" height="512" fill="url(#bg)"/>
-  <g id="art" transform="translate(256 262) scale(0.78) translate(-256 -270)">
-    <g fill="#5BBF4A">
-      <circle cx="124" cy="304" r="24"/><circle cx="160" cy="294" r="24"/><circle cx="198" cy="290" r="24"/>
-      <circle cx="236" cy="288" r="24"/><circle cx="276" cy="288" r="24"/><circle cx="314" cy="290" r="24"/>
-      <circle cx="352" cy="294" r="24"/><circle cx="388" cy="304" r="24"/>
-    </g>
-    <g fill="#E8392F">
-      <circle cx="170" cy="280" r="15"/><circle cx="246" cy="274" r="15"/><circle cx="330" cy="280" r="15"/>
-    </g>
-    <path d="M100 308 A156 156 0 0 0 412 308 Z" fill="#FFC94A" stroke="#B9661B" stroke-width="12" stroke-linejoin="round"/>
-    <g fill="#E3A63A">
-      <circle cx="196" cy="368" r="9"/><circle cx="262" cy="400" r="9"/><circle cx="318" cy="356" r="9"/><circle cx="236" cy="342" r="7"/>
-    </g>
-    <g fill="#FFF7E8">
-      <rect x="292" y="88" width="24" height="168" rx="12"/>
-      <path d="M304 88 C350 98 376 124 370 172 C358 146 334 134 304 132 Z"/>
-      <ellipse cx="270" cy="252" rx="42" ry="31" transform="rotate(-22 270 252)"/>
-    </g>
-  </g>
+  <path transform="translate(150.05 131.00) scale(1.1109)" fill="#FFFFFF" d="M34.5424 37.4564C52.0791 67.3724 97.3961 158.741 44.5444 186.412C-34.5316 227.813 -4.40993 -158.013 103.932 75.7233C157.344 94.2649 190.752 80.1734 190.752 80.1734C130.125 105.496 157.502 225.045 157.502 225.045C137.975 159.188 120.085 110.57 103.932 75.7233C83.4836 68.6247 60.103 56.7431 34.5424 37.4564Z"/>
 </svg>

@@ -1,450 +1,89 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Taco Radio</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #0F172A;
-            color: #E2E8F0;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            text-align: center;
-            padding: 2rem;
-            position: relative;
-            overflow: hidden;
-            transition: background-image 0.5s ease-in-out;
-            background-size: cover;
-            background-position: center;
-        }
-
-        /* Glassmorphism effect for the container */
-        .glass-container {
-            background-color: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(15px);
-            -webkit-backdrop-filter: blur(15px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-            padding: 3rem;
-            border-radius: 2rem;
-            max-width: 600px;
-            width: 100%;
-            z-index: 10;
-            /* Use a CSS variable for text color */
-            --text-color: #E2E8F0;
-            transition: color 0.5s ease;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-        }
-
-        .glass-container * {
-            color: var(--text-color);
-        }
-
-        .glass-container h1, .glass-container h2, .glass-container .text-status, .glass-container .text-artist {
-            color: var(--text-color);
-        }
-        
-        /* Subtle glow animation for the play button */
-        @keyframes glowing {
-            0% { box-shadow: 0 0 5px #fff, 0 0 10px #fff; }
-            50% { box-shadow: 0 0 20px #fff, 0 0 30px #fff; }
-            100% { box-shadow: 0 0 5px #fff, 0 0 10px #fff; }
-        }
-
-        .play-button.playing {
-            animation: glowing 1.5s infinite alternate;
-        }
-
-        /* Modern SVG Icons for the buttons */
-        .icon {
-            width: 3rem;
-            height: 3rem;
-            fill: currentColor;
-        }
-        .text-status {
-            font-size: 1.5rem;
-            font-weight: 700;
-            margin-top: 1rem;
-            margin-bottom: 0.5rem;
-            text-align: left;
-        }
-
-        .text-artist {
-            font-size: 1rem;
-            text-align: left;
-        }
-
-        /* Spinner for loading state */
-        .spinner {
-            border: 4px solid rgba(255, 255, 255, 0.3);
-            border-top: 4px solid #fff;
-            border-radius: 50%;
-            width: 3rem;
-            height: 3rem;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        /* Now Playing Bar Styling */
-        #now-playing-bar {
-            background-color: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(15px);
-            -webkit-backdrop-filter: blur(15px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-            border-radius: 2rem;
-            padding: 1rem;
-            margin-top: 2rem;
-            width: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .song-details {
-            flex: 1;
-            display: flex;
-            align-items: center;
-        }
-
-        .song-text {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-start;
-            margin-left: 1rem;
-            overflow: hidden;
-            white-space: nowrap;
-            text-overflow: ellipsis;
-        }
-        
-        .requests-iframe-container {
-            width: 100%;
-            height: 600px; /* You can adjust this height as needed */
-            margin-top: 2rem;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 2rem;
-            overflow: hidden;
-            transition: max-height 0.5s ease-in-out, opacity 0.5s ease-in-out;
-            max-height: 600px;
-            opacity: 1;
-        }
-
-        .requests-iframe-container.hidden {
-            max-height: 0;
-            opacity: 0;
-            padding: 0;
-            margin-top: 0;
-        }
-
-        .requests-iframe {
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-
-        .toggle-button {
-            background-color: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            color: var(--text-color);
-            padding: 1rem 2rem;
-            border-radius: 1.5rem;
-            font-weight: 600;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-top: 2rem;
-            text-decoration: none;
-            border: none;
-            cursor: pointer;
-        }
-
-        .toggle-button:hover {
-            background-color: rgba(255, 255, 255, 0.2);
-        }
-        
-    </style>
-
-    <!-- Open Graph (OG) and Twitter Card Meta Tags -->
-    <meta property="og:title" content="Taco Radio" id="og-title">
-    <meta property="og:description" content="The best tunes, always on." id="og-description">
-    <meta property="og:image" content="https://placehold.co/1200x630/2B6CB0/ffffff?text=Taco+Radio" id="og-image">
-    <meta property="og:url" content="https://radio.tacolicensing.org">
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Taco Radio" id="twitter-title">
-    <meta name="twitter:description" content="The best tunes, always on." id="twitter-description">
-    <meta name="twitter:image" content="https://placehold.co/1200x675/2B6CB0/ffffff?text=Taco+Radio" id="twitter-image">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Taco Music</title>
+  <meta name="description" content="Taco Music: live radio, playing 24/7.">
+  <meta name="theme-color" content="#FFF8EF" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#15100C" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Taco Music">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <canvas id="color-analyzer-canvas" style="display:none;"></canvas>
+  <div class="app" data-playing="false">
+    <header class="topbar">
+      <div class="brand">
+        <img src="icons/icon.svg" alt="" width="32" height="32">
+        <span>Taco Music</span>
+      </div>
+      <div class="status">
+        <span class="live-badge" id="live-badge" data-live="false">Connecting</span>
+        <span class="listeners" id="listeners" title="Listening now">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a8 8 0 0 0-8 8v5a3 3 0 0 0 3 3h1a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H6v-1a6 6 0 0 1 12 0v1h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h1a3 3 0 0 0 3-3v-5a8 8 0 0 0-8-8z"/></svg>
+          <span id="listener-count">–</span>
+        </span>
+      </div>
+    </header>
 
-    <div id="player-container" class="glass-container">
-        <h1 class="text-5xl font-bold mb-4">Taco Radio</h1>
-        <p class="text-lg mb-8">
-            The best tunes, always on.
-        </p>
-
-        <div id="loading-spinner" class="flex justify-center items-center hidden my-8">
-            <div class="spinner"></div>
+    <main class="layout">
+      <section class="player" aria-label="Now playing">
+        <div class="art">
+          <img id="cover" src="icons/icon-512.png" alt="" width="512" height="512">
         </div>
-        
-        <!-- Now Playing Bar -->
-        <div id="now-playing-bar" class="hidden">
-            <div class="song-details">
-                <!-- Album Art -->
-                <img id="album-art" class="w-16 h-16 rounded-lg shadow-md" src="https://placehold.co/192x192/4F46E5/ffffff?text=No+Art" alt="Album Art">
-                
-                <div class="song-text">
-                    <div class="text-status" id="status-display">
-                        Tap play to get started...
-                    </div>
-                    <div class="text-artist" id="artist-display"></div>
-                </div>
-            </div>
 
-            <button id="play-pause-button" class="play-button bg-white bg-opacity-20 backdrop-blur-lg border border-white border-opacity-30 text-white p-6 rounded-full shadow-lg focus:outline-none transition-all duration-300 hover:scale-105">
-                <!-- Play Icon (modern) -->
-                <svg id="play-icon" class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M5 3l14 9-14 9V3z"></path>
-                </svg>
-                <!-- Pause Icon (modern) -->
-                <svg id="pause-icon" class="icon hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M6 4h4v16H6zM14 4h4v16h-4z"></path>
-                </svg>
-            </button>
+        <div class="meta">
+          <p class="eyebrow">
+            <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Now playing</span>
+          </p>
+          <h1 id="title">Taco Music</h1>
+          <p class="artist" id="artist">Live radio, 24/7</p>
+          <p class="album" id="album"></p>
         </div>
-        
-        <!-- Toggle Requests Page Button -->
-        <button id="toggle-requests-button" class="toggle-button">
-            Hide Requests Page
+
+        <div class="progress" id="progress" hidden>
+          <div class="bar"><div class="fill" id="progress-fill"></div></div>
+          <div class="times"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
+        </div>
+
+        <div class="controls">
+          <button class="play" id="play" type="button" data-state="idle" aria-label="Play">
+            <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.6v12.8a1 1 0 0 0 1.52.85l10.2-6.4a1 1 0 0 0 0-1.7L9.52 4.75A1 1 0 0 0 8 5.6z"/></svg>
+            <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4.5" height="14" rx="1.2"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.2"/></svg>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+        </div>
+
+        <label class="volume" id="volume-row">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5a1 1 0 0 0 1 1h3l4.4 3.67A1 1 0 0 0 14 18.4V5.6a1 1 0 0 0-1.6-.77L8 8.5H5a1 1 0 0 0-1 1zm12.5-2.3a.75.75 0 0 1 1.06.02 7 7 0 0 1 0 9.56.75.75 0 1 1-1.08-1.04 5.5 5.5 0 0 0 0-7.48.75.75 0 0 1 .02-1.06z"/></svg>
+          <span class="visually-hidden">Volume</span>
+          <input type="range" id="volume" min="0" max="1" step="0.01" value="1">
+        </label>
+
+        <p class="notice" id="notice" role="status"></p>
+
+        <button class="install" id="install" type="button" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1zM5 19a1 1 0 1 0 0 2h14a1 1 0 1 0 0-2H5z"/></svg>
+          Install app
         </button>
+        <p class="ios-hint" id="ios-hint" hidden>To install, tap <strong>Share</strong> and then <strong>Add to Home Screen</strong>.</p>
+      </section>
 
-        <!-- Requests Page Iframe -->
-        <div id="requests-iframe-container" class="requests-iframe-container">
-            <iframe id="requests-iframe" class="requests-iframe" src="https://radio.kzeirxn.xyz/public/taco_radio/embed-requests?theme=dark" frameborder="0" allowtransparency="true"></iframe>
-        </div>
-    </div>
-    
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const statusDisplay = document.getElementById('status-display');
-            const artistDisplay = document.getElementById('artist-display');
-            const playPauseButton = document.getElementById('play-pause-button');
-            const playIcon = document.getElementById('play-icon');
-            const pauseIcon = document.getElementById('pause-icon');
-            const body = document.body;
-            const loadingSpinner = document.getElementById('loading-spinner');
-            const albumArtElement = document.getElementById('album-art');
-            const playerContainer = document.getElementById('player-container');
-            const nowPlayingBar = document.getElementById('now-playing-bar');
-            const canvas = document.getElementById('color-analyzer-canvas');
-            const ctx = canvas.getContext('2d');
-            const toggleRequestsButton = document.getElementById('toggle-requests-button');
-            const requestsIframeContainer = document.getElementById('requests-iframe-container');
+      <section class="recent" aria-labelledby="recent-heading">
+        <h2 id="recent-heading">Recently played</h2>
+        <ol class="history" id="history"></ol>
+        <p class="empty" id="history-empty">Songs will show up here as they play.</p>
+      </section>
+    </main>
+  </div>
 
-            let audio = new Audio();
-            let isPlaying = false;
-
-            // --- Your Station Configuration ---
-            // REPLACE THESE URLS with your actual Azuracast stream and API endpoints.
-            const stationUrl = 'https://radio.kzeirxn.xyz/listen/taco_radio/radio.mp3';
-            const azuracastApiUrl = 'https://radio.kzeirxn.xyz/api/nowplaying/taco_radio';
-            
-            audio.src = stationUrl;
-
-            // Function to update the UI status message
-            const updateStatus = (title, artist) => {
-                statusDisplay.textContent = title;
-                artistDisplay.textContent = artist;
-            };
-
-            // Function to analyze image brightness and set text color
-            const determineTextColor = (img) => {
-                // Ensure canvas is correctly sized
-                canvas.width = img.width;
-                canvas.height = img.height;
-                ctx.drawImage(img, 0, 0, img.width, img.height);
-                
-                let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                let data = imageData.data;
-                let brightness = 0;
-                let count = 0;
-
-                // Loop through pixels and calculate average brightness
-                for (let i = 0; i < data.length; i += 4) {
-                    let r = data[i];
-                    let g = data[i + 1];
-                    let b = data[i + 2];
-                    brightness += (r * 0.299 + g * 0.587 + b * 0.114);
-                    count++;
-                }
-
-                let averageBrightness = brightness / count;
-
-                // Set text color based on brightness
-                if (averageBrightness > 128) {
-                    // Bright image, use dark text
-                    playerContainer.style.setProperty('--text-color', '#0F172A');
-                } else {
-                    // Dark image, use light text
-                    playerContainer.style.setProperty('--text-color', '#E2E8F0');
-                }
-            };
-
-            // Function to update the page's meta tags for social sharing
-            const updateMetadata = (songTitle, artistName, artUrl) => {
-                const title = songTitle && artistName ? `${songTitle} by ${artistName}` : 'Taco Radio';
-                const description = songTitle && artistName ? `Now playing: ${songTitle} by ${artistName} on Taco Radio` : 'The best tunes, always on.';
-                const image = artUrl || 'https://placehold.co/1200x630/2B6CB0/ffffff?text=Taco+Licensing';
-                
-                document.getElementById('og-title').setAttribute('content', title);
-                document.getElementById('og-description').setAttribute('content', description);
-                document.getElementById('og-image').setAttribute('content', image);
-                document.getElementById('twitter-title').setAttribute('content', title);
-                document.getElementById('twitter-description').setAttribute('content', description);
-                document.getElementById('twitter-image').setAttribute('content', image);
-            };
-
-            // Function to fetch now-playing data from Azuracast API
-            const fetchNowPlayingData = async () => {
-                try {
-                    const response = await fetch(azuracastApiUrl);
-                    if (!response.ok) {
-                        throw new Error('Network response was not ok');
-                    }
-                    const data = await response.json();
-                    
-                    const nowPlayingSong = data.now_playing.song;
-
-                    // Update now playing info
-                    updateStatus(nowPlayingSong.title, nowPlayingSong.artist);
-
-                    // Update the background image and the album art image element
-                    if (nowPlayingSong.art) {
-                        const img = new Image();
-                        img.crossOrigin = "Anonymous"; // Required for CORS-enabled image analysis
-                        img.onload = () => {
-                            body.style.backgroundImage = `url('${nowPlayingSong.art}')`;
-                            albumArtElement.src = nowPlayingSong.art;
-                            determineTextColor(img);
-                            updateMetadata(nowPlayingSong.title, nowPlayingSong.artist, nowPlayingSong.art);
-                        };
-                        img.onerror = () => {
-                            console.error('Failed to load album art image. Using placeholder.');
-                            body.style.backgroundImage = 'url(https://placehold.co/1200x800/2B6CB0/ffffff?text=Taco+Licensing)';
-                            albumArtElement.src = 'https://placehold.co/192x192/4F46E5/ffffff?text=No+Art';
-                            // Revert to default text color on error
-                            playerContainer.style.setProperty('--text-color', '#E2E8F0');
-                            updateMetadata(nowPlayingSong.title, nowPlayingSong.artist, null);
-                        };
-                        img.src = nowPlayingSong.art;
-                    } else {
-                        body.style.backgroundImage = 'url(https://placehold.co/1200x800/2B6CB0/ffffff?text=Taco+Licensing)';
-                        albumArtElement.src = 'https://placehold.co/192x192/4F46E5/ffffff?text=No+Art';
-                        // Revert to default text color if no art is available
-                        playerContainer.style.setProperty('--text-color', '#E2E8F0');
-                        updateMetadata(nowPlayingSong.title, nowPlayingSong.artist, nowPlayingSong.art);
-                    }
-
-                } catch (error) {
-                    console.error('Error fetching now playing data:', error);
-                    updateStatus('Stream is offline or an error occurred.');
-                    artistDisplay.textContent = 'Please check the station\'s status.';
-                    albumArtElement.src = 'https://placehold.co/192x192/4F46E5/ffffff?text=No+Art';
-                    // Revert to default text color on API error
-                    playerContainer.style.setProperty('--text-color', '#E2E8F0');
-                    updateMetadata(null, null, null);
-                }
-            };
-
-            // Function to toggle the play/pause state
-            const togglePlayPause = () => {
-                if (isPlaying) {
-                    audio.pause();
-                } else {
-                    nowPlayingBar.classList.add('hidden');
-                    loadingSpinner.classList.remove('hidden');
-                    audio.play().catch(error => {
-                        updateStatus('Error playing stream. Please try again.');
-                        console.error('Playback error:', error);
-                        isPlaying = false;
-                        toggleIcons();
-                    });
-                }
-            };
-
-            // Function to switch between play and pause icons and add animation
-            const toggleIcons = () => {
-                if (isPlaying) {
-                    playIcon.classList.add('hidden');
-                    pauseIcon.classList.remove('hidden');
-                    playPauseButton.classList.add('playing');
-                } else {
-                    playIcon.classList.remove('hidden');
-                    pauseIcon.classList.add('hidden');
-                    playPauseButton.classList.remove('playing');
-                }
-            };
-
-            // Event listener for the requests page toggle button
-            toggleRequestsButton.addEventListener('click', () => {
-                requestsIframeContainer.classList.toggle('hidden');
-                if (requestsIframeContainer.classList.contains('hidden')) {
-                    toggleRequestsButton.textContent = 'Show Requests Page';
-                } else {
-                    toggleRequestsButton.textContent = 'Hide Requests Page';
-                }
-            });
-
-            // Event listener for the main play/pause button
-            playPauseButton.addEventListener('click', togglePlayPause);
-            
-            // Audio event listeners
-            audio.onplay = () => {
-                isPlaying = true;
-                toggleIcons();
-                nowPlayingBar.classList.remove('hidden');
-                loadingSpinner.classList.add('hidden');
-                updateStatus('Now playing...');
-                fetchNowPlayingData();
-                setInterval(fetchNowPlayingData, 5000); // Update every 15 seconds
-            };
-
-            audio.onpause = () => {
-                isPlaying = false;
-                toggleIcons();
-                updateStatus('Paused.');
-            };
-
-            audio.onwaiting = () => {
-                nowPlayingBar.classList.add('hidden');
-                loadingSpinner.classList.remove('hidden');
-            };
-
-            audio.onerror = () => {
-                updateStatus('Error playing stream.');
-                artistDisplay.textContent = 'Please check the URL.';
-                toggleIcons();
-                nowPlayingBar.classList.remove('hidden');
-                loadingSpinner.classList.add('hidden');
-            }
-        });
-    </script>
+  <script src="app.js" defer></script>
 </body>
 </html>

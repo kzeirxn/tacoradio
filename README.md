@@ -1,0 +1,25 @@
+# Taco Music
+
+An installable web player (PWA) for the Taco Music live stream.
+
+- **Stream:** `https://icecast.tacogroup.uk/stream`
+- **Now playing feed:** `https://icecast.tacogroup.uk/nowplaying/nowplaying.json`
+
+Both addresses are set at the top of `app.js`.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `index.html`, `styles.css`, `app.js` | The player |
+| `manifest.webmanifest` | App name, colours and icons for installing |
+| `sw.js` | Service worker: caches the app so it opens instantly and offline |
+| `icons/` | App icons (`icon.svg` is the source; the PNGs are rendered from it) |
+
+## Hosting
+
+Any static web host works, as long as it serves the site over **HTTPS**, which browsers
+require before they offer "Install app". Serve the files as they are; no build step is needed.
+
+After changing the app files, bump `CACHE` in `sw.js` (for example `taco-music-v2`) so
+installed copies pick up the new version.

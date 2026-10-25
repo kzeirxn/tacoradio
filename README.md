@@ -8,9 +8,12 @@ An installable web player (PWA) for the Taco Music live stream.
 - **Lyrics:** looked up per song from [LRCLIB](https://lrclib.net) (free, no API key). Synced
   lyrics highlight and scroll along with the song.
 
-These are set at the top of `app.js`, along with `LISTEN_DELAY`: how many seconds listeners
-hear the stream behind the feed. Raise it if titles and lyrics run ahead of the music, and
-lower it if they lag behind.
+These are set at the top of `app.js`.
+
+**Keeping lyrics and the progress bar in time:** the feed gives each song's start time and the
+server's current time, so the app corrects for a device clock that's off. While playing, it
+measures how far behind live the listener is from the player's buffer, plus Icecast's
+burst-on-connect (`BURST_SECONDS`). Before playback starts it assumes `DEFAULT_LISTEN_DELAY`.
 
 ## Files
 

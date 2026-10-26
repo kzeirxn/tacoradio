@@ -2,7 +2,7 @@
 
 An installable web player (PWA) for the Taco Music live stream.
 
-- **Stream:** `https://icecast.tacogroup.uk/stream`
+- **Stream:** `https://icecast.tacogroup.uk/stream` (128 kbps), and `/stream-low` (64 kbps) for the data saver
 - **Now playing feed:** `https://icecast.tacogroup.uk/nowplaying/nowplaying.json`
 
 - **Lyrics:** shown in the Lyrics tab and in a full-screen view (opened from the line shown under
@@ -30,6 +30,29 @@ An installable web player (PWA) for the Taco Music live stream.
   Upcoming requests come back in the feed's `requests` list. The server enforces the rules
   (a wait between requests per listener, no duplicates, nothing played in the last 30 minutes,
   and a maximum queue length).
+
+- **Likes:** the heart beside the play button likes the playing song (`/requests/like`). Each
+  device sends an anonymous random id so its like counts once; counts arrive live with the
+  timing updates. The **Top** tab shows the most liked, played and requested songs
+  (`/requests/charts`).
+- **Your request is playing:** the app remembers which songs this listener requested and shows a
+  message when one starts, and a notification if the app is in the background and the listener
+  allowed it.
+- **Sleep timer:** 15, 30 or 60 minutes; then it fades out over 8 seconds and stops.
+- **Share:** the share sheet (or a copied link) with the playing song and the station's address.
+- **Data saver:** automatic (the 64 kbps stream on mobile data or with the browser's data saver
+  on), always on, or off. Changing it while playing switches streams straight away. If the server
+  doesn't have the small stream, the normal one is used.
+- **Visualiser:** bars on the cover, in its colour, where the app plays the stream through Media
+  Source (not on iPhones and iPads, where routing audio through Web Audio would stop background
+  playback), and not for listeners who ask for reduced motion.
+- **Live DJs and jingles:** a live DJ shows with a badge and no progress bar, and their songs' lyrics
+  as words only (a DJ's song can start anywhere); a station ident shows as the station.
+- **Station admin** (`admin.js`, loaded only when opened from the footer or at `#admin`): sign in
+  with the admin password set on the server, then skip the song or end a DJ's set, reorder,
+  remove or add requests, see who's listening, upload songs and jingles (sent in pieces under
+  1 MB; the server turns away duplicates and checks LRCLIB for lyrics), and see stats: totals, the
+  most listeners at once each hour for the last week, daily peaks and top songs.
 
 These are set at the top of `app.js`.
 
@@ -62,6 +85,7 @@ when the app isn't playing.
 | File | Purpose |
 |---|---|
 | `index.html`, `styles.css`, `app.js` | The player |
+| `admin.js` | The station admin page, loaded when it's opened |
 | `manifest.webmanifest` | App name, colours and icons for installing |
 | `sw.js` | Service worker: always loads the latest app, and keeps a copy so it opens offline |
 | `vendor/js-yaml.min.js` | [js-yaml](https://github.com/nodeca/js-yaml) 4.1.0, reads Lyricsfile YAML (MIT License, see `vendor/js-yaml.LICENSE.txt`) |

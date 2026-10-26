@@ -9,7 +9,15 @@ An installable web player (PWA) for the Taco Music live stream.
   the song title on phones, or the expand button on the tab), with the cover blurred behind them.
   The line being sung sits a third of the way down and the others fade with distance; backing
   vocals in brackets are set smaller; instrumental breaks and intros of 5 s or more show three dots
-  that fill in until singing resumes. Looked up per song from [LRCLIB](https://lrclib.net) (free, no API key), reading
+  that fill in until singing resumes. Word-by-word (karaoke) timings come from
+  [SyncLRC](https://synclrc.dev) (`SYNCLRC_API`) where it has them for a recording within
+  `SYNC_TOLERANCE` seconds of the playing file, with background vocals as their own smaller lines.
+  It's asked at the same time as LRCLIB; if its answer takes more than `KARAOKE_WAIT_MS`, LRCLIB's
+  lyrics show first and switch over when it arrives, and if it's still fetching a song's word
+  timings it's asked again after `KARAOKE_RETRY_MS`. SyncLRC allows 30 requests a minute (the app
+  makes about one a song); if it answers "too many requests", the app leaves it alone for
+  `SYNCLRC_PAUSE_MS`. If SyncLRC can't be reached, LRCLIB is used as
+  below. Lyrics are looked up per song from [LRCLIB](https://lrclib.net) (free, no API key), reading
   each record's [Lyricsfile](https://lrclib.net/lyricsfile) where it has one, with LRC and plain
   text as fallbacks. Songs with word timings light up word by word; others highlight line by line.
   Timed lyrics are only used when LRCLIB's recording is within `SYNC_TOLERANCE` seconds of the

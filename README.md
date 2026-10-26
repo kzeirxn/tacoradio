@@ -5,7 +5,11 @@ An installable web player (PWA) for the Taco Music live stream.
 - **Stream:** `https://icecast.tacogroup.uk/stream`
 - **Now playing feed:** `https://icecast.tacogroup.uk/nowplaying/nowplaying.json`
 
-- **Lyrics:** looked up per song from [LRCLIB](https://lrclib.net) (free, no API key), reading
+- **Lyrics:** shown in the Lyrics tab and in a full-screen view (opened from the line shown under
+  the song title on phones, or the expand button on the tab), with the cover blurred behind them.
+  The line being sung sits a third of the way down and the others fade with distance; backing
+  vocals in brackets are set smaller; instrumental breaks and intros of 5 s or more show three dots
+  that fill in until singing resumes. Looked up per song from [LRCLIB](https://lrclib.net) (free, no API key), reading
   each record's [Lyricsfile](https://lrclib.net/lyricsfile) where it has one, with LRC and plain
   text as fallbacks. Songs with word timings light up word by word; others highlight line by line.
   Timed lyrics are only used when LRCLIB's recording is within `SYNC_TOLERANCE` seconds of the
@@ -32,14 +36,18 @@ and the server's clock, and the app works out how far behind the broadcast the l
 - **iPhone and iPad** keep the plain player, so audio carries on in the background. There the app
   times how long the player took to start (less the connection time, measured from the feed
   requests) and adds any time spent waiting for data.
-- **Clock:** the device's clock is lined up with the server's from the freshest of the last 20
-  feed readings.
-- **Song changes:** the app checks the feed every 2 seconds (`POLL_MS`), and twice a second around
-  the end of a song, so skips and new songs show up about when they're heard.
+- **Clock:** the device's clock is lined up with the server's from the quickest of the last 30
+  live updates, or without them the freshest of the last 20 feed readings.
+- **Live updates:** the request service streams the playing song's elapsed and remaining time with
+  the server's clock every second (`/requests/live`, server-sent events), and pushes song changes
+  and new requests the moment they happen. The app keeps its clock in line with each update.
+  Without it, the app checks the feed every 2 seconds (`POLL_MS`), and twice a second around the
+  end of a song.
 
 Measured against a test stream with beeps at known moments, the lyrics clock is within about
-0.15 s of what's heard, on both kinds of player and after network stalls. `STREAM_LATENCY` is the measured time for audio to get from the AutoDJ to
-listeners; `DEFAULT_LISTEN_DELAY` is used when the app isn't playing.
+0.15 s of what's heard, on both kinds of player and after network stalls. `STREAM_LATENCY` is
+the measured time for audio to get from the AutoDJ to listeners; `DEFAULT_LISTEN_DELAY` is used
+when the app isn't playing.
 
 ## Files
 

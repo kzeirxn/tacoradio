@@ -9,8 +9,13 @@ const LRCLIB_CLIENT = 'Taco Music v1 (https://music.tacogroup.uk)';
 const SYNC_TOLERANCE = 3;
 const LIBRARY_URL = 'https://icecast.tacogroup.uk/nowplaying/library.json';
 const REQUEST_API = 'https://icecast.tacogroup.uk/requests';
-// How often to check the feed. Often enough that a skipped song shows up within a couple of seconds.
+// Live timing from the server: the playing song's elapsed and remaining with the server's clock
+// every second, and song changes the moment they happen. The app keeps in time with it continuously.
+const LIVE_URL = `${REQUEST_API}/live`;
+// How often to check the feed: without live updates often enough that a skipped song shows up
+// within a couple of seconds; with them, just for the listener count and recently played
 const POLL_MS = 2000;
+const LIVE_POLL_MS = 10000;
 // Listeners hear the stream a little behind the feed, so titles, progress and lyrics are held
 // back to match. While playing, the app works out the delay from the stream itself; this is the
 // guess used when it isn't playing (typical when playing: about 1.2 s).
@@ -63,6 +68,24 @@ const els = {
   volumeRow: $('volume-row'),
   install: $('install'),
   iosHint: $('ios-hint'),
+  lyricsStage: $('lyrics-stage'),
+  lyricsStatusText: $('lyrics-status-text'),
+  lyricsExpand: $('lyrics-expand'),
+  nowLine: $('now-line'),
+  nowLineText: $('now-line-text'),
+  lyricsView: $('lyrics-view'),
+  lvHead: $('lv-head'),
+  lvBody: $('lv-body'),
+  lvClose: $('lv-close'),
+  lvArt: $('lv-art'),
+  lvThumb: $('lv-thumb'),
+  lvTitle: $('lv-title'),
+  lvArtist: $('lv-artist'),
+  lvProgress: $('lv-progress'),
+  lvFill: $('lv-fill'),
+  lvElapsed: $('lv-elapsed'),
+  lvRemaining: $('lv-remaining'),
+  lvPlay: $('lv-play'),
 };
 
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
@@ -83,6 +106,12 @@ let listenDelay = DEFAULT_LISTEN_DELAY;
 let clockOffset = 0;
 const clockSamples = [];
 const roundTrips = []; // how long recent feed requests took, a guide to how long connecting takes
+const liveSamples = [];
+let liveAt = 0; // when the last live update arrived (ms)
+let liveKey = null;
+let wasLive = false;
+let liveRetryMs = 5000;
+const liveConnected = () => Date.now() - liveAt < 3500;
 
 // Server time: this device's clock, corrected using the feed's server_time
 const now = () => Date.now() / 1000 + clockOffset;
@@ -112,8 +141,10 @@ let connection = null; // timing for the current connection, used to work out th
 const clock = () => performance.now() / 1000; // steady seconds, unaffected by clock changes
 
 function setState(state) {
-  els.play.dataset.state = state;
-  els.play.setAttribute('aria-label', state === 'idle' ? 'Play' : 'Pause');
+  for (const button of [els.play, els.lvPlay]) {
+    button.dataset.state = state;
+    button.setAttribute('aria-label', state === 'idle' ? 'Play' : 'Pause');
+  }
   els.app.dataset.playing = String(state === 'playing');
   if (hasMediaSession) navigator.mediaSession.playbackState = state === 'idle' ? 'paused' : 'playing';
 }
@@ -474,24 +505,39 @@ function showTrack(track) {
   els.album.textContent = (track && track.album) || '';
   els.requestedChip.hidden = !(track && track.requested);
   setCover(track && track.cover);
+  // The full-screen lyrics header and backdrop
+  els.lvTitle.textContent = els.title.textContent;
+  els.lvArtist.textContent = track ? (track.artist || '') : 'Live radio, 24/7';
+  for (const img of [els.lvThumb, els.lvArt]) {
+    img.onerror = () => { img.onerror = null; img.src = FALLBACK_COVER; };
+    img.src = (track && track.cover) || FALLBACK_COVER;
+  }
   document.title = track
     ? `${track.title}${track.artist ? ` – ${track.artist}` : ''} · Taco Music`
     : 'Taco Music';
   updateMediaSession(track);
 }
 
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+
 function renderProgress(track) {
   if (!track || !track.started_at || !track.duration) {
     els.progress.hidden = true;
+    els.lvProgress.hidden = true;
     return;
   }
   const elapsed = Math.min(Math.max(songPosition(track), 0), track.duration);
   els.progress.hidden = false;
   els.fill.style.transform = `scaleX(${elapsed / track.duration})`;
-  const elapsedText = formatTime(elapsed);
-  const durationText = formatTime(track.duration);
-  if (els.elapsed.textContent !== elapsedText) els.elapsed.textContent = elapsedText;
-  if (els.duration.textContent !== durationText) els.duration.textContent = durationText;
+  setText(els.elapsed, formatTime(elapsed));
+  setText(els.duration, formatTime(track.duration));
+  // Full-screen lyrics show the time left instead
+  els.lvProgress.hidden = false;
+  els.lvFill.style.transform = els.fill.style.transform;
+  setText(els.lvElapsed, els.elapsed.textContent);
+  setText(els.lvRemaining, `-${formatTime(Math.ceil(track.duration - elapsed))}`);
 }
 
 function makeThumb(src) {
@@ -861,8 +907,12 @@ function fetchLyrics(track) {
   return lyricsCache.get(key);
 }
 
-function setLyricsStatus(text) {
-  els.lyricsStatus.textContent = text;
+// kind: 'idle', 'loading', 'none', 'instrumental' or 'error' when there's nothing else to show,
+// 'note' for a remark above words-only lyrics
+function setLyricsStatus(text, kind = 'note') {
+  els.lyricsStatusText.textContent = text;
+  els.lyricsStatus.dataset.kind = text ? kind : '';
+  els.lyricsStage.dataset.state = text && kind === 'loading' ? 'loading' : '';
 }
 
 // Where in the song listeners are, in seconds, going by the feed's start time and length
@@ -870,28 +920,122 @@ function songPosition(track) {
   return now() - track.started_at - listenDelay;
 }
 
-// Lines without an end time last until the next line starts, or until the song ends
-function buildLines(lines, songDuration) {
-  return lines.map((line, i) => {
-    const next = lines.slice(i + 1).find((l) => l.start > line.start);
-    const end = line.end ?? (next ? next.start : songDuration || Infinity);
-    const el = document.createElement('p');
-    el.className = 'line';
-    const words = line.words.map((word, j) => {
+// Backing vocals, written in brackets, are shown smaller and lighter
+function addText(el, text) {
+  for (const part of text.split(/(\([^)]*\))/)) {
+    if (!part) continue;
+    if (part.startsWith('(') && part.endsWith(')')) {
       const span = document.createElement('span');
-      span.className = 'word';
-      span.textContent = word.text;
-      const after = line.words[j + 1];
-      return { start: word.start, end: word.end ?? (after ? after.start : end), el: span, fill: -1 };
-    });
-    if (words.length) {
-      el.classList.add('has-words');
-      el.append(...words.map((word) => word.el));
+      span.className = 'bv';
+      span.textContent = part;
+      el.append(span);
     } else {
-      el.textContent = line.text || '♪';
+      el.append(part);
     }
-    return { start: line.start, end, words, el, state: '' };
+  }
+}
+
+// Breaks with no singing at least this long (seconds) show the waiting dots
+const GAP_SECONDS = 5;
+// A line still showing this long after it started is over: the rest is an instrumental part
+const LONGEST_LINE = 12;
+
+function gapLine(start, end) {
+  const el = document.createElement('p');
+  el.className = 'line gap';
+  el.setAttribute('aria-hidden', 'true');
+  const dots = [0, 1, 2].map(() => {
+    const dot = document.createElement('span');
+    dot.className = 'gap-dot';
+    return dot;
   });
+  el.append(...dots);
+  return { start, end, words: [], dots, lit: -1, gap: true, el, state: '', distance: -1 };
+}
+
+function sungLine(line, end) {
+  const el = document.createElement('p');
+  el.className = 'line';
+  let inBrackets = false;
+  const words = line.words.map((word, j) => {
+    const span = document.createElement('span');
+    span.className = 'word';
+    span.textContent = word.text;
+    // Words in brackets are backing vocals
+    if (word.text.includes('(')) inBrackets = true;
+    if (inBrackets) span.classList.add('bv');
+    if (word.text.includes(')')) inBrackets = false;
+    const after = line.words[j + 1];
+    return { start: word.start, end: word.end ?? (after ? after.start : end), el: span, fill: -1 };
+  });
+  if (words.length) {
+    el.classList.add('has-words');
+    el.append(...words.map((word) => word.el));
+  } else {
+    addText(el, line.text);
+  }
+  return { start: line.start, end, words, el, state: '', distance: -1, text: line.text };
+}
+
+// Lines without an end time last until the next line starts (an empty line marks a break), or
+// until the song ends. Long breaks between lines, and long intros, get the waiting dots.
+function buildLines(lines, songDuration) {
+  const timed = lines.map((line, i) => {
+    const next = lines.slice(i + 1).find((l) => l.start > line.start);
+    let end = line.end ?? (next ? next.start : songDuration || Infinity);
+    if (end - line.start > LONGEST_LINE && !line.words.length) end = line.start + LONGEST_LINE;
+    return { line, end };
+  }).filter(({ line }) => line.text.trim() || line.words.length);
+  const out = [];
+  let freeFrom = 0; // when the last sung line ended
+  for (const { line, end } of timed) {
+    if (line.start - freeFrom >= GAP_SECONDS) out.push(gapLine(freeFrom, line.start));
+    out.push(sungLine(line, end));
+    freeFrom = Math.max(freeFrom, end);
+  }
+  return out;
+}
+
+// Words-only lyrics, laid out in verses, with [Section] labels picked out
+function plainLyrics(text) {
+  const box = document.createElement('div');
+  box.className = 'plain';
+  let stanza = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) {
+      stanza = null;
+      continue;
+    }
+    const section = line.match(/^\[(.+)\]$/);
+    if (section) {
+      const label = document.createElement('p');
+      label.className = 'section';
+      label.textContent = section[1];
+      box.append(label);
+      stanza = null;
+      continue;
+    }
+    if (!stanza) {
+      stanza = document.createElement('div');
+      stanza.className = 'stanza';
+      box.append(stanza);
+    }
+    const p = document.createElement('p');
+    addText(p, line);
+    stanza.append(p);
+  }
+  return box;
+}
+
+// The strip under the song title: the line being sung, or a way into words-only lyrics
+function setNowLine(text) {
+  els.nowLine.hidden = !text;
+  if (!text || els.nowLineText.textContent === text) return;
+  els.nowLineText.textContent = text;
+  els.nowLineText.classList.remove('swap');
+  void els.nowLineText.offsetWidth; // restart the animation
+  els.nowLineText.classList.add('swap');
 }
 
 async function showLyrics(track) {
@@ -902,23 +1046,24 @@ async function showLyrics(track) {
   els.lyrics.replaceChildren();
   els.lyrics.dataset.synced = 'false';
   els.lyrics.scrollTop = 0;
+  setNowLine('');
   if (!track || !track.title) {
-    setLyricsStatus('Lyrics will show up here when a song is playing.');
+    setLyricsStatus('Lyrics will show up here when a song is playing.', 'idle');
     return;
   }
-  setLyricsStatus('Finding lyrics…');
+  setLyricsStatus('Finding lyrics…', 'loading');
   let result;
   try {
     result = await fetchLyrics(track);
   } catch {
-    if (token === lyricsToken) setLyricsStatus('Couldn’t load lyrics right now.');
+    if (token === lyricsToken) setLyricsStatus('Couldn’t load lyrics right now.', 'error');
     return;
   }
   if (token !== lyricsToken) return; // the song changed while we were waiting
 
-  if (!result) return setLyricsStatus('No lyrics found for this song.');
+  if (!result) return setLyricsStatus('No lyrics found for this song.', 'none');
   if (result.instrumental && !result.lines.length && !result.plain) {
-    return setLyricsStatus('Instrumental. Enjoy the music.');
+    return setLyricsStatus('Instrumental. Enjoy the music.', 'instrumental');
   }
   setLyricsStatus(result.otherVersion
     ? 'Timed lyrics are only available for a different version of this song, so these won’t follow along.'
@@ -931,18 +1076,20 @@ async function showLyrics(track) {
     els.lyrics.append(...lyricsLines.map((line) => line.el));
     syncLyrics();
   } else {
-    const plain = document.createElement('div');
-    plain.className = 'plain';
-    plain.textContent = result.plain;
-    els.lyrics.append(plain);
+    els.lyrics.append(plainLyrics(result.plain));
+    setNowLine('Lyrics');
   }
 }
 
-function scrollToLine(el) {
+// Lyrics are on screen: the tab is open, or the full-screen view
+const lyricsVisible = () => lyricsViewOpen || !els.lyricsPanel.hidden;
+
+// Bring a line to a third of the way down, leaving room to read ahead
+function scrollToLine(el, instant) {
   const box = els.lyrics;
   box.scrollTo({
-    top: el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2,
-    behavior: reduceMotion ? 'auto' : 'smooth',
+    top: el.offsetTop + el.offsetHeight / 2 - box.clientHeight * 0.36,
+    behavior: instant || reduceMotion ? 'auto' : 'smooth',
   });
 }
 
@@ -958,6 +1105,17 @@ function syncWords(line, t) {
     word.el.classList.toggle('singing', fill > 0 && fill < 1);
     if (fill > 0 && fill < 1) word.el.style.setProperty('--fill', `${fill * 100}%`);
   }
+}
+
+// The waiting dots fill in one by one as the break goes on
+function syncGap(line, t) {
+  const progress = Math.min(Math.max((t - line.start) / (line.end - line.start), 0), 1);
+  const lit = Math.round(progress * 30);
+  if (lit === line.lit) return;
+  line.lit = lit;
+  line.dots.forEach((dot, i) => {
+    dot.style.opacity = String(0.3 + 0.7 * Math.min(Math.max(progress * 3 - i, 0), 1));
+  });
 }
 
 function syncLyrics() {
@@ -977,17 +1135,26 @@ function syncLyrics() {
       line.el.classList.toggle('active', state === 'active');
     }
     if (line.words.length) syncWords(line, t);
+    if (line.gap && state === 'active') syncGap(line, t);
     if (state === 'active' && focus < 0) focus = i;
     if (t >= line.start) reached = i;
   });
-  // Between lines (an instrumental break), stay on the last line that was sung
+  // Between lines, stay on the last line that was sung
   if (focus < 0) focus = reached;
   if (focus === activeLine) return;
   activeLine = focus;
+  // Lines further from the one being sung fade more
+  lyricsLines.forEach((line, i) => {
+    const distance = focus < 0 ? Math.min(i + 1, 6) : Math.min(Math.abs(i - focus), 6);
+    if (distance !== line.distance) {
+      line.distance = distance;
+      line.el.style.setProperty('--d', distance);
+    }
+  });
+  const current = lyricsLines[focus];
+  setNowLine(current && !current.gap && current.state === 'active' ? current.text : '♪');
   // Follow along, unless the listener has just scrolled the lyrics themselves
-  if (focus >= 0 && !els.lyricsPanel.hidden && Date.now() > userScrolledUntil) {
-    scrollToLine(lyricsLines[focus].el);
-  }
+  if (focus >= 0 && lyricsVisible() && Date.now() > userScrolledUntil) scrollToLine(current.el);
 }
 
 // The progress bar and lyrics move together, from the same clock: every frame while word-by-word
@@ -995,10 +1162,13 @@ function syncLyrics() {
 function tick() {
   try {
     measureListenDelay();
+    // Switch to the next song the moment listeners hear it, not at the next once-a-second redraw
+    const { track } = currentTrack();
+    if ((track ? `${track.text}|${track.started_at}` : null) !== shownKey) render();
     renderProgress(shownTrack);
     syncLyrics();
   } finally {
-    if (lyricsHasWords && !els.lyricsPanel.hidden && !reduceMotion) requestAnimationFrame(tick);
+    if (lyricsHasWords && lyricsVisible() && !reduceMotion) requestAnimationFrame(tick);
     else setTimeout(tick, 250);
   }
 }
@@ -1006,6 +1176,71 @@ function tick() {
 for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
   els.lyrics.addEventListener(type, () => { userScrolledUntil = Date.now() + 6000; }, { passive: true });
 }
+
+// ---- Full-screen lyrics ----
+
+let lyricsViewOpen = false;
+let lyricsCloseTimer = null;
+let focusBeforeLyrics = null;
+
+function jumpToCurrentLine() {
+  requestAnimationFrame(() => {
+    if (activeLine >= 0 && lyricsLines[activeLine]) scrollToLine(lyricsLines[activeLine].el, true);
+  });
+}
+
+function openLyricsView() {
+  if (lyricsViewOpen) return;
+  lyricsViewOpen = true;
+  clearTimeout(lyricsCloseTimer);
+  focusBeforeLyrics = document.activeElement;
+  els.lvBody.append(els.lyricsStage); // the same lyrics, moved into the full-screen view
+  els.lyricsView.hidden = false;
+  document.body.classList.add('lyrics-open');
+  requestAnimationFrame(() => els.lyricsView.classList.add('open'));
+  // The back button (or gesture) closes it
+  try { history.pushState({ lyrics: true }, ''); } catch { /* not allowed */ }
+  els.lvClose.focus({ preventScroll: true });
+  userScrolledUntil = 0;
+  jumpToCurrentLine();
+}
+
+function closeLyricsView(fromHistory) {
+  if (!lyricsViewOpen) return;
+  lyricsViewOpen = false;
+  els.lyricsView.classList.remove('open');
+  document.body.classList.remove('lyrics-open');
+  if (!fromHistory && history.state && history.state.lyrics) history.back();
+  // Move the lyrics back once the view has faded out
+  lyricsCloseTimer = setTimeout(() => {
+    els.lyricsView.hidden = true;
+    els.lyricsPanel.prepend(els.lyricsStage);
+    jumpToCurrentLine();
+  }, 300);
+  if (focusBeforeLyrics && document.contains(focusBeforeLyrics)) focusBeforeLyrics.focus({ preventScroll: true });
+}
+
+els.nowLine.addEventListener('click', openLyricsView);
+els.lyricsExpand.addEventListener('click', openLyricsView);
+els.lvClose.addEventListener('click', () => closeLyricsView(false));
+els.lvPlay.addEventListener('click', () => (wantPlaying ? stop() : play()));
+window.addEventListener('popstate', () => closeLyricsView(true));
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && lyricsViewOpen) closeLyricsView(false);
+});
+
+// Swipe down on the header to close
+let swipeFrom = null;
+els.lvHead.addEventListener('pointerdown', (event) => {
+  if (event.target.closest('button')) return; // leave the close button's click alone
+  swipeFrom = event.clientY;
+  els.lvHead.setPointerCapture(event.pointerId); // keep following the drag outside the header
+});
+els.lvHead.addEventListener('pointerup', (event) => {
+  if (swipeFrom !== null && event.clientY - swipeFrom > 60) closeLyricsView(false);
+  swipeFrom = null;
+});
+els.lvHead.addEventListener('pointercancel', () => { swipeFrom = null; });
 
 // ---- Tabs ----
 
@@ -1023,7 +1258,7 @@ function selectTab(name) {
     t.panel.hidden = !selected;
   }
   try { localStorage.setItem('taco-tab', name); } catch { /* storage unavailable */ }
-  if (name === 'lyrics' && activeLine >= 0) scrollToLine(lyricsLines[activeLine].el);
+  if (name === 'lyrics') jumpToCurrentLine();
   if (name === 'request') loadLibrary();
 }
 
@@ -1052,7 +1287,59 @@ function syncClock(data, sent, received) {
   if (clockSamples.length && Math.abs(sample - clockOffset) > 5) clockSamples.length = 0; // a clock changed
   clockSamples.push(sample);
   if (clockSamples.length > 20) clockSamples.shift();
+  if (liveConnected()) return; // live updates give a sharper reading
   clockOffset = Math.max(...clockSamples) + (data.poll_seconds || 0) / (clockSamples.length + 1);
+}
+
+// Live updates are sent the moment they're made, so only the trip here makes them old. The quickest
+// of the last 30 is the best guide, and half the quickest feed round trip allows for the trip.
+function syncClockLive(serverTime, received) {
+  const oneWay = roundTrips.length ? Math.min(...roundTrips) / 2 : 0.05;
+  const sample = serverTime - received + oneWay;
+  if (liveSamples.length && Math.abs(sample - clockOffset) > 5) liveSamples.length = 0; // a clock changed
+  liveSamples.push(sample);
+  if (liveSamples.length > 30) liveSamples.shift();
+  clockOffset = Math.max(...liveSamples);
+}
+
+function onLive(update, received) {
+  liveAt = Date.now();
+  wasLive = true;
+  liveRetryMs = 5000;
+  if (typeof update.server_time === 'number') syncClockLive(update.server_time, received);
+  // The song or the request queue changed: get the full feed now, not at the next check
+  const key = `${update.text}|${update.started_at}|${update.requests}`;
+  const np = feed && feed.now_playing;
+  const behind = !np || np.text !== update.text || np.started_at !== update.started_at
+    || (feed.requests || []).length !== update.requests;
+  if (key !== liveKey && behind) poll();
+  liveKey = key;
+}
+
+function connectLive() {
+  if (typeof EventSource === 'undefined') return;
+  const source = new EventSource(LIVE_URL);
+  source.onmessage = (event) => {
+    let update;
+    try { update = JSON.parse(event.data); } catch { return; }
+    onLive(update, Date.now() / 1000);
+  };
+  source.onerror = () => {
+    // A dropped connection reconnects by itself. If the server turned it away (restarting, or one
+    // without live updates), try again later, waiting longer each time up to a minute. The feed
+    // checks carry on meanwhile.
+    if (source.readyState !== EventSource.CLOSED) return;
+    setTimeout(connectLive, liveRetryMs);
+    liveRetryMs = Math.min(liveRetryMs * 2, 60000);
+  };
+}
+
+// If live updates stop, go back to checking the feed often straight away
+function checkLive() {
+  if (wasLive && !liveConnected()) {
+    wasLive = false;
+    poll();
+  }
 }
 
 function connectSeconds() {
@@ -1076,6 +1363,8 @@ async function loadFeed() {
 
 // Check again just after the current song should end, so the next one shows up promptly
 function nextPollMs() {
+  // Live updates announce song changes themselves
+  if (liveConnected()) return LIVE_POLL_MS;
   // A little randomness, so the readings land at different points in the feed's regular rewrite
   // and the clock sync gets a fresh one soon
   const regular = POLL_MS + Math.random() * 500;
@@ -1102,8 +1391,10 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) poll();
 });
 setInterval(render, 1000);
+setInterval(checkLive, 1000);
 tick();
 poll();
+connectLive();
 
 // ---- Install as an app ----
 

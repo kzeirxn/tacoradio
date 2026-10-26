@@ -59,6 +59,10 @@
           <h1 id="title">Taco Music</h1>
           <p class="artist" id="artist">Live radio, 24/7</p>
           <p class="album" id="album"></p>
+          <button class="now-line" id="now-line" type="button" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+            <span class="now-line-text" id="now-line-text"></span>
+          </button>
         </div>
 
         <div class="progress" id="progress" hidden>
@@ -97,9 +101,17 @@
         </div>
 
         <div class="tab-panel" id="lyrics-panel" role="tabpanel" aria-labelledby="tab-lyrics">
-          <div class="lyrics" id="lyrics" data-synced="false"></div>
-          <p class="lyrics-status" id="lyrics-status">Lyrics will show up here when a song is playing.</p>
-          <p class="credit">Lyrics from <a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a></p>
+          <div class="lyrics-stage" id="lyrics-stage">
+            <div class="lyrics-skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="lyrics-status" id="lyrics-status" data-kind="idle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg><p id="lyrics-status-text" role="status">Lyrics will show up here when a song is playing.</p></div>
+            <div class="lyrics" id="lyrics" data-synced="false"></div>
+          </div>
+          <div class="lyrics-foot">
+            <p class="credit">Lyrics from <a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a></p>
+            <button class="icon-btn" id="lyrics-expand" type="button" aria-label="Full-screen lyrics" title="Full-screen lyrics">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4a1 1 0 1 1 0 2H6v3a1 1 0 1 1-2 0zm11-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0V6h-2a1 1 0 0 1-1-1zM5 14a1 1 0 0 1 1 1v3h3a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zm14 0a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 1 1 0-2h3v-3a1 1 0 0 1 1-1z"/></svg>
+            </button>
+          </div>
         </div>
 
         <div class="tab-panel" id="request-panel" role="tabpanel" aria-labelledby="tab-request" hidden>
@@ -124,6 +136,32 @@
         </div>
       </section>
     </main>
+
+    <div class="lyrics-view" id="lyrics-view" role="dialog" aria-modal="true" aria-labelledby="lv-title" hidden>
+      <div class="lv-backdrop" aria-hidden="true"><img id="lv-art" src="icons/icon-512.png" alt=""></div>
+      <header class="lv-head" id="lv-head">
+        <img class="lv-thumb" id="lv-thumb" src="icons/icon-512.png" alt="" width="48" height="48">
+        <div class="lv-meta">
+          <p class="lv-title" id="lv-title">Taco Music</p>
+          <p class="lv-artist" id="lv-artist"></p>
+        </div>
+        <button class="icon-btn" id="lv-close" type="button" aria-label="Close lyrics" title="Close lyrics">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.3 8.8a1 1 0 0 1 1.4 0L12 14.1l5.3-5.3a1 1 0 1 1 1.4 1.4l-6 6a1 1 0 0 1-1.4 0l-6-6a1 1 0 0 1 0-1.4z"/></svg>
+        </button>
+      </header>
+      <div class="lv-body" id="lv-body"></div>
+      <footer class="lv-foot">
+        <div class="lv-progress" id="lv-progress">
+          <div class="bar"><div class="fill" id="lv-fill"></div></div>
+          <div class="times"><span id="lv-elapsed">0:00</span><span id="lv-remaining"></span></div>
+        </div>
+        <button class="play play-small" id="lv-play" type="button" data-state="idle" aria-label="Play">
+          <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.6v12.8a1 1 0 0 0 1.52.85l10.2-6.4a1 1 0 0 0 0-1.7L9.52 4.75A1 1 0 0 0 8 5.6z"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4.5" height="14" rx="1.2"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.2"/></svg>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
+      </footer>
+    </div>
   </div>
 
   <script src="vendor/js-yaml.min.js" defer></script>

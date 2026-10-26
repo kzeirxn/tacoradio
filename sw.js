@@ -1,6 +1,6 @@
-// Caches the app itself so it opens instantly and works as an installed app.
+// Caches the app itself so it still opens without a connection.
 // The stream and the now-playing feed live on another domain and always go to the network.
-const CACHE = 'taco-music-v7';
+const CACHE = 'taco-music-v9';
 const APP_FILES = [
   './',
   './index.html',
@@ -16,7 +16,7 @@ const APP_FILES = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(APP_FILES)));
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(APP_FILES.map((file) => new Request(file, { cache: 'reload' })))));
   self.skipWaiting();
 });
 
@@ -31,32 +31,19 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
+  const key = request.mode === 'navigate' ? './index.html' : request;
 
-  if (request.mode === 'navigate') {
-    // Pages: try the network first so updates show up, fall back to the cached app
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE).then((cache) => cache.put('./index.html', copy));
-          return response;
-        })
-        .catch(() => caches.match('./index.html')),
-    );
-    return;
-  }
-
-  // Everything else: serve from cache, refresh it in the background
+  // Network first, checking with the server even if the browser has a copy, so the page and its
+  // scripts always come from the same version of the app. The cache is for when there's no connection.
   event.respondWith(
-    caches.open(CACHE).then(async (cache) => {
-      const cached = await cache.match(request, { ignoreSearch: true });
-      const fresh = fetch(request)
-        .then((response) => {
-          if (response.ok) cache.put(request, response.clone());
-          return response;
-        })
-        .catch(() => cached);
-      return cached || fresh;
-    }),
+    fetch(request.url, { cache: 'no-cache' })
+      .then((response) => {
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE).then((cache) => cache.put(key, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(key, { ignoreSearch: true })),
   );
 });

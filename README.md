@@ -21,10 +21,25 @@ An installable web player (PWA) for the Taco Music live stream.
 
 These are set at the top of `app.js`.
 
-**Keeping lyrics and the progress bar in time:** the feed gives each song's start time and the
-server's current time, so the app corrects for a device clock that's off. While playing, it
-measures how far behind live the listener is from the player's buffer, plus Icecast's
-burst-on-connect (`BURST_SECONDS`). Before playback starts it assumes `DEFAULT_LISTEN_DELAY`.
+**Keeping lyrics and the progress bar in time:** the feed gives each song's exact start time
+and the server's clock, and the app works out how far behind the broadcast the listener is hearing.
+
+- **Playback:** where the browser supports Media Source Extensions for MP3 (Chrome, Edge and
+  Android do), the app downloads the stream itself and feeds it to the player. Playback starts within
+  about a second, instead of the 7 to 8 seconds Chrome otherwise collects first. Because the app
+  knows when each piece of the stream arrived, it knows exactly which moment of the broadcast is
+  playing, including after network stalls.
+- **iPhone and iPad** keep the plain player, so audio carries on in the background. There the app
+  times how long the player took to start (less the connection time, measured from the feed
+  requests) and adds any time spent waiting for data.
+- **Clock:** the device's clock is lined up with the server's from the freshest of the last 20
+  feed readings.
+- **Song changes:** the app checks the feed every 2 seconds (`POLL_MS`), and twice a second around
+  the end of a song, so skips and new songs show up about when they're heard.
+
+Measured against a test stream with beeps at known moments, the lyrics clock is within about
+0.15 s of what's heard, on both kinds of player and after network stalls. `STREAM_LATENCY` is the measured time for audio to get from the AutoDJ to
+listeners; `DEFAULT_LISTEN_DELAY` is used when the app isn't playing.
 
 ## Files
 

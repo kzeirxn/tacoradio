@@ -9,13 +9,18 @@ const LRCLIB_CLIENT = 'Taco Music v1 (https://music.tacogroup.uk)';
 const SYNC_TOLERANCE = 3;
 const LIBRARY_URL = 'https://icecast.tacogroup.uk/nowplaying/library.json';
 const REQUEST_API = 'https://icecast.tacogroup.uk/requests';
-const POLL_MS = 10000;
+// How often to check the feed. Often enough that a skipped song shows up within a couple of seconds.
+const POLL_MS = 2000;
 // Listeners hear the stream a little behind the feed, so titles, progress and lyrics are held
-// back to match. While playing, the delay is measured from the player's buffer; this is the
-// guess used before that. Raise it if lyrics run ahead of the music when not playing.
-const DEFAULT_LISTEN_DELAY = 2;
+// back to match. While playing, the app works out the delay from the stream itself; this is the
+// guess used when it isn't playing (typical when playing: about 1.2 s).
+const DEFAULT_LISTEN_DELAY = 1.2;
 // Icecast sends this much audio from just before "now" when a player connects (16 KB at 128 kbps)
 const BURST_SECONDS = 1;
+// Audio reaches listeners about this long after the AutoDJ starts it (measured: 0.1 to 0.25 s)
+const STREAM_LATENCY = 0.15;
+// How long connecting to the stream takes before audio arrives, until the feed has been timed
+const CONNECT_SECONDS = 0.4;
 const FALLBACK_COVER = 'icons/icon-512.png';
 
 const $ = (id) => document.getElementById(id);
@@ -77,6 +82,7 @@ let historySig = '';
 let listenDelay = DEFAULT_LISTEN_DELAY;
 let clockOffset = 0;
 const clockSamples = [];
+const roundTrips = []; // how long recent feed requests took, a guide to how long connecting takes
 
 // Server time: this device's clock, corrected using the feed's server_time
 const now = () => Date.now() / 1000 + clockOffset;
@@ -96,6 +102,15 @@ function timeAgo(ts) {
 
 // ---- Playback ----
 
+// Where the browser allows it, the app downloads the stream itself and hands it to the player
+// (Media Source Extensions). Playback then starts as soon as the first second arrives, rather than
+// after the several seconds Chrome otherwise collects first, and the app knows exactly which moment
+// of the broadcast is playing. iPhones and iPads keep the plain player, which carries on playing
+// in the background.
+let useMediaSource = !isIOS && typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg');
+let connection = null; // timing for the current connection, used to work out the listening delay
+const clock = () => performance.now() / 1000; // steady seconds, unaffected by clock changes
+
 function setState(state) {
   els.play.dataset.state = state;
   els.play.setAttribute('aria-label', state === 'idle' ? 'Play' : 'Pause');
@@ -103,13 +118,92 @@ function setState(state) {
   if (hasMediaSession) navigator.mediaSession.playbackState = state === 'idle' ? 'paused' : 'playing';
 }
 
+function closeConnection() {
+  if (connection && connection.abort) connection.abort.abort();
+  connection = null;
+}
+
+// Feed the stream to the player in pieces as it downloads, noting when each piece arrived
+async function pumpStream(source, conn) {
+  let buffer;
+  try {
+    buffer = source.addSourceBuffer('audio/mpeg');
+  } catch (err) {
+    useMediaSource = false; // this browser can't do it after all
+    throw err;
+  }
+  try { buffer.mode = 'sequence'; } catch { /* the browser already chose it */ }
+  const pending = [];
+  let appendedAt = 0;
+  const appendNext = () => {
+    if (buffer.updating || source.readyState !== 'open') return;
+    const { buffered } = buffer;
+    // Let go of audio that has played, keeping the last half minute
+    if (buffered.length && audio.currentTime - buffered.start(0) > 60) {
+      buffer.remove(buffered.start(0), audio.currentTime - 30);
+      return;
+    }
+    if (!pending.length) return;
+    const size = pending.reduce((n, piece) => n + piece.length, 0);
+    const data = new Uint8Array(size);
+    let at = 0;
+    for (const piece of pending) {
+      data.set(piece, at);
+      at += piece.length;
+    }
+    pending.length = 0;
+    appendedAt = conn.lastArrival;
+    buffer.appendBuffer(data);
+  };
+  buffer.addEventListener('updateend', () => {
+    const { buffered } = buffer;
+    if (buffered.length && appendedAt) {
+      conn.gotAudio = true;
+      // Audio arrives as it's broadcast, so arrival time minus position in the stream gives the
+      // moment the stream started. Pieces held up on the way only make it later, so keep the earliest.
+      conn.origin = Math.min(conn.origin, appendedAt - buffered.end(buffered.length - 1));
+      appendedAt = 0;
+    }
+    appendNext();
+  });
+  const res = await fetch(`${STREAM_URL}?t=${Date.now()}`, { signal: conn.abort.signal, cache: 'no-store' });
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) throw new Error('The stream ended');
+    conn.lastArrival = clock();
+    pending.push(value);
+    appendNext();
+  }
+}
+
+function connectMediaSource() {
+  const source = new MediaSource();
+  const conn = { abort: new AbortController(), origin: Infinity, lastArrival: 0, played: false, mediaSource: true };
+  connection = conn;
+  audio.src = URL.createObjectURL(source);
+  source.addEventListener('sourceopen', () => {
+    URL.revokeObjectURL(audio.src);
+    pumpStream(source, conn).catch(() => {
+      if (connection === conn) reconnect();
+    });
+  }, { once: true });
+}
+
 function play() {
   wantPlaying = true;
   clearTimeout(retryTimer);
   els.notice.textContent = '';
   setState('loading');
+  closeConnection();
   // A fresh connection every time, so playback always starts at the live point
-  audio.src = `${STREAM_URL}?t=${Date.now()}`;
+  if (useMediaSource) {
+    connectMediaSource();
+  } else {
+    connection = { requestedAt: clock(), played: false };
+    audio.src = `${STREAM_URL}?t=${Date.now()}`;
+  }
   audio.play().catch((err) => {
     if (err.name === 'NotAllowedError') {
       wantPlaying = false;
@@ -121,6 +215,7 @@ function play() {
 function stop() {
   wantPlaying = false;
   clearTimeout(retryTimer);
+  closeConnection();
   audio.pause();
   audio.removeAttribute('src');
   audio.load();
@@ -128,20 +223,29 @@ function stop() {
   setState('idle');
 }
 
-// How far behind the feed this listener is: Icecast's burst plus whatever the player has buffered
+// How far behind the broadcast this listener is hearing, in seconds
 function measureListenDelay() {
-  if (!wantPlaying) {
+  if (!wantPlaying || !connection) {
     listenDelay = DEFAULT_LISTEN_DELAY;
     return;
   }
-  if (audio.paused || !audio.buffered.length) return;
-  const ahead = audio.buffered.end(audio.buffered.length - 1) - audio.currentTime;
-  if (ahead < 0 || ahead > 8) return; // not a sensible reading for a live stream
-  listenDelay = listenDelay * 0.8 + (BURST_SECONDS + ahead) * 0.2; // smooth out jitter
+  let behind = null;
+  if (connection.mediaSource && Number.isFinite(connection.origin)) {
+    // Exact: the stream position playing now, against when that part of the stream arrived
+    behind = clock() - (connection.origin + audio.currentTime) + STREAM_LATENCY;
+  } else if (connection.playingAt) {
+    // Plain player: the delay when playback began, plus any time spent waiting for data since
+    behind = connection.startDelay
+      + (clock() - connection.playingAt) - (audio.currentTime - connection.playingPosition);
+  }
+  if (behind !== null && behind >= 0 && behind < 300) listenDelay = behind;
 }
 
 function reconnect() {
   if (!wantPlaying) return;
+  // If audio arrived but the browser couldn't play it this way, use the plain player from now on
+  if (connection && connection.mediaSource && connection.gotAudio && !connection.played) useMediaSource = false;
+  closeConnection();
   setState('loading');
   els.notice.textContent = 'Connection lost. Reconnecting…';
   clearTimeout(retryTimer);
@@ -152,6 +256,18 @@ els.play.addEventListener('click', () => (wantPlaying ? stop() : play()));
 audio.addEventListener('playing', () => {
   els.notice.textContent = '';
   setState('playing');
+  if (connection && !connection.played) {
+    connection.played = true;
+    if (!connection.mediaSource) {
+      // The plain player collects audio before it starts, and everything collected puts the
+      // listener further behind. Time it: from asking for the stream (less connecting) to playing,
+      // plus the audio Icecast sends from before the moment of connecting.
+      connection.playingAt = clock();
+      connection.playingPosition = audio.currentTime;
+      connection.startDelay = Math.max(0, connection.playingAt - connection.requestedAt - connectSeconds())
+        + BURST_SECONDS + STREAM_LATENCY;
+    }
+  }
 });
 audio.addEventListener('waiting', () => {
   if (wantPlaying) setState('loading');
@@ -878,6 +994,7 @@ function syncLyrics() {
 // lyrics are on screen, otherwise 4 times a second
 function tick() {
   try {
+    measureListenDelay();
     renderProgress(shownTrack);
     syncLyrics();
   } finally {
@@ -924,14 +1041,23 @@ try {
   if (tabs.some((t) => t.name === saved)) selectTab(saved);
 } catch { /* storage unavailable */ }
 
-// Line this device's clock up with the server's, using the median of recent readings
+// Line this device's clock up with the server's, using the freshest of recent readings
 function syncClock(data, sent, received) {
   if (typeof data.server_time !== 'number') return;
-  // The feed is rewritten every poll_seconds, so on average it's half a poll old
-  const serverNow = data.server_time + (data.poll_seconds || 0) / 2;
-  clockSamples.push(serverNow - (sent + received) / 2);
-  if (clockSamples.length > 9) clockSamples.shift();
-  clockOffset = [...clockSamples].sort((a, b) => a - b)[Math.floor(clockSamples.length / 2)];
+  roundTrips.push(received - sent);
+  if (roundTrips.length > 9) roundTrips.shift();
+  // The feed is rewritten every poll_seconds, so each copy is up to that old when it arrives. The
+  // freshest of several readings is the best guide, plus the typical age of the freshest of that many.
+  const sample = data.server_time - (sent + received) / 2;
+  if (clockSamples.length && Math.abs(sample - clockOffset) > 5) clockSamples.length = 0; // a clock changed
+  clockSamples.push(sample);
+  if (clockSamples.length > 20) clockSamples.shift();
+  clockOffset = Math.max(...clockSamples) + (data.poll_seconds || 0) / (clockSamples.length + 1);
+}
+
+function connectSeconds() {
+  if (!roundTrips.length) return CONNECT_SECONDS;
+  return [...roundTrips].sort((a, b) => a - b)[Math.floor(roundTrips.length / 2)];
 }
 
 async function loadFeed() {
@@ -950,13 +1076,19 @@ async function loadFeed() {
 
 // Check again just after the current song should end, so the next one shows up promptly
 function nextPollMs() {
+  // A little randomness, so the readings land at different points in the feed's regular rewrite
+  // and the clock sync gets a fresh one soon
+  const regular = POLL_MS + Math.random() * 500;
   const np = feed && feed.now_playing;
   if (np && np.started_at && np.duration) {
     const endsIn = np.started_at + np.duration - now();
-    if (endsIn < -3) return 2000; // overdue: keep checking until the feed moves on
-    if (endsIn < POLL_MS / 1000) return Math.max(500, (endsIn + 1.2) * 1000);
+    // Listeners hear the next song about a second after the feed shows it, so check twice a second
+    // around the end. Start a little early: a song's listed length can be a second or two out.
+    if (endsIn < -8) return 2000; // well overdue: keep checking until the feed moves on
+    if (endsIn < 3) return 500;
+    if (endsIn < 3 + regular / 1000) return Math.max(500, (endsIn - 3) * 1000);
   }
-  return POLL_MS;
+  return regular;
 }
 
 function poll() {

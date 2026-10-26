@@ -7,6 +7,12 @@ const LRCLIB_API = 'https://lrclib.net/api';
 const LRCLIB_CLIENT = 'Taco Music v1 (https://music.tacogroup.uk)';
 // Lyric timings only fit a recording of the same length (in seconds) as the one playing
 const SYNC_TOLERANCE = 3;
+// SyncLRC adds word-by-word (karaoke) timings to LRCLIB's lyrics for many songs
+const SYNCLRC_API = 'https://api.synclrc.dev';
+// How long to wait for SyncLRC's word timings before showing LRCLIB's lyrics (they switch over if
+// the word timings come later), and when to ask again if SyncLRC was still fetching them
+const KARAOKE_WAIT_MS = 2000;
+const KARAOKE_RETRY_MS = 15000;
 const LIBRARY_URL = 'https://icecast.tacogroup.uk/nowplaying/library.json';
 const REQUEST_API = 'https://icecast.tacogroup.uk/requests';
 // Live timing from the server: the playing song's elapsed and remaining with the server's clock
@@ -69,6 +75,7 @@ const els = {
   install: $('install'),
   iosHint: $('ios-hint'),
   lyricsStage: $('lyrics-stage'),
+  credit: $('lyrics-credit'),
   lyricsStatusText: $('lyrics-status-text'),
   lyricsExpand: $('lyrics-expand'),
   nowLine: $('now-line'),
@@ -897,6 +904,91 @@ async function lookupLyrics(track) {
   return match;
 }
 
+// Word-by-word lyrics as SyncLRC writes them: [00:12.30]<00:12.30>Hello <00:12.80>world<00:13.40>
+// Each word starts at the time before it; a time with no word after it ends the word before.
+// {bg} marks background vocals, which have their own line; {agent:...} marks who sings, unused here.
+const karaokeTime = (minutes, seconds) => parseInt(minutes, 10) * 60 + parseFloat(seconds.replace(':', '.'));
+
+function parseKaraoke(text) {
+  const lines = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const head = raw.match(/^\[(\d+):(\d+(?:[.:]\d+)?)\](.*)$/);
+    if (!head) continue;
+    let rest = head[3].replace(/\{agent:[^}]*\}/g, '');
+    const background = rest.includes('{bg}');
+    rest = rest.replace(/\{bg\}/g, '');
+    const parts = rest.split(/<(\d+):(\d+(?:[.:]\d+)?)>/);
+    const words = [];
+    for (let i = 1; i < parts.length; i += 3) {
+      const time = karaokeTime(parts[i], parts[i + 1]);
+      const word = parts[i + 2] || '';
+      if (word) words.push({ text: word, start: time, end: null });
+      else if (words.length) words[words.length - 1].end = time;
+    }
+    if (words.length && parts[0].trim()) words[0].text = parts[0] + words[0].text;
+    const start = karaokeTime(head[1], head[2]);
+    if (!words.length) {
+      if (!rest.trim()) lines.push({ text: '', start, end: null, words: [] }); // a break
+      continue;
+    }
+    lines.push({ text: words.map((w) => w.text).join('').trim(), start, end: words[words.length - 1].end, words, background });
+  }
+  return lines.sort((a, b) => a.start - b.start);
+}
+
+// SyncLRC allows 30 requests a minute; the app asks once a song (and maybe once more). If it says
+// that's too many anyway, leave it alone for a minute.
+const SYNCLRC_PAUSE_MS = 60000;
+let synclrcPausedUntil = 0;
+
+// One SyncLRC request, or null. It can be unreachable from some networks (its host may check for
+// bots), slow or busy; any of that just means LRCLIB's lyrics are used.
+async function synclrc(track, fresh) {
+  if (Date.now() < synclrcPausedUntil) return null;
+  const params = new URLSearchParams({ track: track.title, artist: track.artist, duration: Math.round(track.duration), include: 'bg' });
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 10000);
+  try {
+    const res = await fetch(`${SYNCLRC_API}/lyrics?${params}`, { signal: abort.signal, cache: fresh ? 'no-store' : 'default' });
+    if (res.status === 429) synclrcPausedUntil = Date.now() + SYNCLRC_PAUSE_MS;
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// SyncLRC's word timings, when they're for a recording the same length as the one playing
+function readKaraoke(data, songDuration) {
+  if (!data || data.type !== 'karaoke' || typeof data.lyrics !== 'string' || !data.duration) return null;
+  if (Math.abs(data.duration - songDuration) > SYNC_TOLERANCE) return null;
+  const lines = parseKaraoke(data.lyrics);
+  if (!lines.some((line) => line.words.length)) return null;
+  return { duration: data.duration, instrumental: false, lines, plain: null, source: 'synclrc' };
+}
+
+const karaokeCache = new Map();
+
+function fetchKaraoke(track) {
+  if (!track.artist || !track.duration) return Promise.resolve(null);
+  const key = `${track.artist}|${track.title}|${Math.round(track.duration)}`;
+  if (!karaokeCache.has(key)) {
+    karaokeCache.set(key, (async () => {
+      let data = await synclrc(track);
+      // The first request for a song can set SyncLRC fetching its word timings: ask again shortly
+      if (data && data.type !== 'karaoke' && !data.instrumental) {
+        await sleep(KARAOKE_RETRY_MS);
+        data = await synclrc(track, true);
+      }
+      return readKaraoke(data, track.duration);
+    })());
+    // Keep only what was found: next time the song plays, ask again
+    karaokeCache.get(key).then((found) => { if (!found) karaokeCache.delete(key); });
+  }
+  return karaokeCache.get(key);
+}
+
 function fetchLyrics(track) {
   const key = `${track.artist}|${track.title}|${Math.round(track.duration || 0)}`;
   if (!lyricsCache.has(key)) {
@@ -955,8 +1047,8 @@ function gapLine(start, end) {
 
 function sungLine(line, end) {
   const el = document.createElement('p');
-  el.className = 'line';
-  let inBrackets = false;
+  el.className = line.background ? 'line bg-line' : 'line';
+  let inBrackets = !!line.background; // a background-vocals line is set smaller throughout
   const words = line.words.map((word, j) => {
     const span = document.createElement('span');
     span.className = 'word';
@@ -964,7 +1056,7 @@ function sungLine(line, end) {
     // Words in brackets are backing vocals
     if (word.text.includes('(')) inBrackets = true;
     if (inBrackets) span.classList.add('bv');
-    if (word.text.includes(')')) inBrackets = false;
+    if (word.text.includes(')') && !line.background) inBrackets = false;
     const after = line.words[j + 1];
     return { start: word.start, end: word.end ?? (after ? after.start : end), el: span, fill: -1 };
   });
@@ -1038,29 +1130,20 @@ function setNowLine(text) {
   els.nowLineText.classList.add('swap');
 }
 
-async function showLyrics(track) {
-  const token = ++lyricsToken;
+function setCredit(source) {
+  const lrclib = '<a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a>';
+  const synclrc = '<a href="https://synclrc.dev" target="_blank" rel="noopener">SyncLRC</a>';
+  els.credit.innerHTML = source === 'synclrc' ? `Word-by-word lyrics from ${synclrc} and ${lrclib}` : `Lyrics from ${lrclib}`;
+}
+
+function renderLyrics(result, track) {
   lyricsLines = [];
   lyricsHasWords = false;
   activeLine = -1;
   els.lyrics.replaceChildren();
   els.lyrics.dataset.synced = 'false';
-  els.lyrics.scrollTop = 0;
   setNowLine('');
-  if (!track || !track.title) {
-    setLyricsStatus('Lyrics will show up here when a song is playing.', 'idle');
-    return;
-  }
-  setLyricsStatus('Finding lyrics…', 'loading');
-  let result;
-  try {
-    result = await fetchLyrics(track);
-  } catch {
-    if (token === lyricsToken) setLyricsStatus('Couldn’t load lyrics right now.', 'error');
-    return;
-  }
-  if (token !== lyricsToken) return; // the song changed while we were waiting
-
+  setCredit(result && result.source);
   if (!result) return setLyricsStatus('No lyrics found for this song.', 'none');
   if (result.instrumental && !result.lines.length && !result.plain) {
     return setLyricsStatus('Instrumental. Enjoy the music.', 'instrumental');
@@ -1078,6 +1161,41 @@ async function showLyrics(track) {
   } else {
     els.lyrics.append(plainLyrics(result.plain));
     setNowLine('Lyrics');
+  }
+}
+
+async function showLyrics(track) {
+  const token = ++lyricsToken;
+  lyricsLines = [];
+  lyricsHasWords = false;
+  activeLine = -1;
+  els.lyrics.replaceChildren();
+  els.lyrics.dataset.synced = 'false';
+  els.lyrics.scrollTop = 0;
+  setNowLine('');
+  setCredit();
+  if (!track || !track.title) {
+    setLyricsStatus('Lyrics will show up here when a song is playing.', 'idle');
+    return;
+  }
+  setLyricsStatus('Finding lyrics…', 'loading');
+  // Both at once: SyncLRC's word-by-word timings, and LRCLIB's lyrics
+  const karaoke = fetchKaraoke(track);
+  const lyrics = fetchLyrics(track).then((result) => ({ result }), () => ({ failed: true }));
+  // Give the word timings a moment, so the lyrics don't change soon after they appear
+  const early = await Promise.race([karaoke, sleep(KARAOKE_WAIT_MS)]);
+  if (token !== lyricsToken) return; // the song changed while we were waiting
+  if (early) return renderLyrics(early, track);
+
+  const { result, failed } = await lyrics;
+  if (token !== lyricsToken) return;
+  if (failed) setLyricsStatus('Couldn’t load lyrics right now.', 'error');
+  else renderLyrics(result, track);
+
+  // Word timings that turn up later take over
+  if (early === undefined) {
+    const late = await karaoke;
+    if (late && token === lyricsToken) renderLyrics(late, track);
   }
 }
 

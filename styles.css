@@ -564,6 +564,9 @@ h1 {
 /* Backing vocals, written in brackets */
 .bv { font-size: 0.8em; font-weight: 650; opacity: 0.66; }
 
+/* Background vocals with their own timing (SyncLRC), tucked under the lead line */
+.line.bg-line { padding-top: 0; }
+
 /* Word-by-word lyrics: the sung line's words light up as they're sung, with a soft edge */
 .lyrics.syncing .line.active.has-words {
   text-shadow: none; /* a text shadow would paint over the filling word */

@@ -1,11 +1,12 @@
 // Caches the app itself so it opens instantly and works as an installed app.
 // The stream and the now-playing feed live on another domain and always go to the network.
-const CACHE = 'taco-music-v5';
+const CACHE = 'taco-music-v7';
 const APP_FILES = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './vendor/js-yaml.min.js',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',

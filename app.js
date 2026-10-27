@@ -1,6 +1,8 @@
 'use strict';
 
 const STREAM_URL = 'https://icecast.tacogroup.uk/stream';
+// The same broadcast at half the size (64 kbps), for the data saver
+const STREAM_URL_LOW = 'https://icecast.tacogroup.uk/stream-low';
 const FEED_URL = 'https://icecast.tacogroup.uk/nowplaying/nowplaying.json';
 const LRCLIB_API = 'https://lrclib.net/api';
 // LRCLIB asks apps to say who they are
@@ -18,6 +20,8 @@ const REQUEST_API = 'https://icecast.tacogroup.uk/requests';
 // Live timing from the server: the playing song's elapsed and remaining with the server's clock
 // every second, and song changes the moment they happen. The app keeps in time with it continuously.
 const LIVE_URL = `${REQUEST_API}/live`;
+const LIKE_API = `${REQUEST_API}/like`;
+const CHARTS_URL = `${REQUEST_API}/charts`;
 // How often to check the feed: without live updates often enough that a skipped song shows up
 // within a couple of seconds; with them, just for the listener count and recently played
 const POLL_MS = 2000;
@@ -26,7 +30,8 @@ const LIVE_POLL_MS = 10000;
 // back to match. While playing, the app works out the delay from the stream itself; this is the
 // guess used when it isn't playing (typical when playing: about 1.2 s).
 const DEFAULT_LISTEN_DELAY = 1.2;
-// Icecast sends this much audio from just before "now" when a player connects (16 KB at 128 kbps)
+// Icecast sends this much audio from just before "now" when a player connects (16 KB: 1 s at
+// 128 kbps, twice that on the data saver stream)
 const BURST_SECONDS = 1;
 // Audio reaches listeners about this long after the AutoDJ starts it (measured: 0.1 to 0.25 s)
 const STREAM_LATENCY = 0.15;
@@ -93,6 +98,25 @@ const els = {
   lvElapsed: $('lv-elapsed'),
   lvRemaining: $('lv-remaining'),
   lvPlay: $('lv-play'),
+  like: $('like'),
+  likeCount: $('like-count'),
+  share: $('share'),
+  sleepBtn: $('sleep-btn'),
+  sleepLabel: $('sleep-label'),
+  sleepMenu: $('sleep-menu'),
+  saverBtn: $('saver-btn'),
+  saverLabel: $('saver-label'),
+  saverMenu: $('saver-menu'),
+  djChip: $('dj-chip'),
+  visualiser: $('visualiser'),
+  toasts: $('toasts'),
+  tabTop: $('tab-top'),
+  topPanel: $('top-panel'),
+  charts: $('charts'),
+  chartsEmpty: $('charts-empty'),
+  notifyOffer: $('notify-offer'),
+  adminOpen: $('admin-open'),
+  adminView: $('admin-view'),
 };
 
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
@@ -146,6 +170,22 @@ function timeAgo(ts) {
 let useMediaSource = !isIOS && typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg');
 let connection = null; // timing for the current connection, used to work out the listening delay
 const clock = () => performance.now() / 1000; // steady seconds, unaffected by clock changes
+
+// Data saver: the half-size stream, always or (automatically) on mobile data
+let saverSetting = 'auto';
+let lowUnavailable = false; // the server doesn't have the data saver stream
+try {
+  const saved = localStorage.getItem('taco-saver');
+  if (['auto', 'on', 'off'].includes(saved)) saverSetting = saved;
+} catch { /* storage unavailable */ }
+
+function onMobileData() {
+  const c = navigator.connection;
+  return !!c && (c.saveData || c.type === 'cellular' || ['slow-2g', '2g', '3g'].includes(c.effectiveType));
+}
+
+const useLowStream = () => !lowUnavailable && (saverSetting === 'on' || (saverSetting === 'auto' && onMobileData()));
+const burstSeconds = () => (connection && connection.low ? BURST_SECONDS * 2 : BURST_SECONDS);
 
 function setState(state) {
   for (const button of [els.play, els.lvPlay]) {
@@ -204,7 +244,8 @@ async function pumpStream(source, conn) {
     }
     appendNext();
   });
-  const res = await fetch(`${STREAM_URL}?t=${Date.now()}`, { signal: conn.abort.signal, cache: 'no-store' });
+  const res = await fetch(`${conn.low ? STREAM_URL_LOW : STREAM_URL}?t=${Date.now()}`, { signal: conn.abort.signal, cache: 'no-store' });
+  if (res.status === 404 && conn.low) lowUnavailable = true; // the normal stream from now on
   if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
   const reader = res.body.getReader();
   for (;;) {
@@ -218,7 +259,7 @@ async function pumpStream(source, conn) {
 
 function connectMediaSource() {
   const source = new MediaSource();
-  const conn = { abort: new AbortController(), origin: Infinity, lastArrival: 0, played: false, mediaSource: true };
+  const conn = { abort: new AbortController(), origin: Infinity, lastArrival: 0, played: false, mediaSource: true, low: useLowStream() };
   connection = conn;
   audio.src = URL.createObjectURL(source);
   source.addEventListener('sourceopen', () => {
@@ -238,9 +279,11 @@ function play() {
   // A fresh connection every time, so playback always starts at the live point
   if (useMediaSource) {
     connectMediaSource();
+    startAudioGraph();
   } else {
-    connection = { requestedAt: clock(), played: false };
-    audio.src = `${STREAM_URL}?t=${Date.now()}`;
+    const low = useLowStream();
+    connection = { requestedAt: clock(), played: false, low };
+    audio.src = `${low ? STREAM_URL_LOW : STREAM_URL}?t=${Date.now()}`;
   }
   audio.play().catch((err) => {
     if (err.name === 'NotAllowedError') {
@@ -253,6 +296,7 @@ function play() {
 function stop() {
   wantPlaying = false;
   clearTimeout(retryTimer);
+  cancelSleep();
   closeConnection();
   audio.pause();
   audio.removeAttribute('src');
@@ -282,7 +326,11 @@ function measureListenDelay() {
 function reconnect() {
   if (!wantPlaying) return;
   // If audio arrived but the browser couldn't play it this way, use the plain player from now on
-  if (connection && connection.mediaSource && connection.gotAudio && !connection.played) useMediaSource = false;
+  // (a connection that simply dropped is no reason to)
+  if (connection && connection.mediaSource && connection.gotAudio && !connection.played && audio.error) useMediaSource = false;
+  // The plain player couldn't find the data saver stream: use the normal one
+  if (connection && !connection.mediaSource && connection.low && !connection.played && audio.error
+    && audio.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) lowUnavailable = true;
   closeConnection();
   setState('loading');
   els.notice.textContent = 'Connection lost. Reconnecting…';
@@ -294,6 +342,8 @@ els.play.addEventListener('click', () => (wantPlaying ? stop() : play()));
 audio.addEventListener('playing', () => {
   els.notice.textContent = '';
   setState('playing');
+  startAudioGraph();
+  startVisualiser();
   if (connection && !connection.played) {
     connection.played = true;
     if (!connection.mediaSource) {
@@ -303,7 +353,7 @@ audio.addEventListener('playing', () => {
       connection.playingAt = clock();
       connection.playingPosition = audio.currentTime;
       connection.startDelay = Math.max(0, connection.playingAt - connection.requestedAt - connectSeconds())
-        + BURST_SECONDS + STREAM_LATENCY;
+        + burstSeconds() + STREAM_LATENCY;
     }
   }
 });
@@ -327,9 +377,256 @@ try {
 } catch { /* storage unavailable */ }
 audio.volume = parseFloat(els.volume.value);
 els.volume.addEventListener('input', () => {
-  audio.volume = parseFloat(els.volume.value);
+  if (!sleepFade) audio.volume = parseFloat(els.volume.value);
   try { localStorage.setItem('taco-volume', els.volume.value); } catch { /* storage unavailable */ }
 });
+
+// ---- Visualiser ----
+
+// Where the app downloads the stream itself (not on iPhones and iPads), the music can also go
+// through Web Audio, which measures it for the bars on the cover. That's set up on the first press
+// of play, as browsers only allow it then.
+let audioGraph = null;
+let vizFrame = 0;
+let vizHeights = [];
+let vizColour = '';
+let vizColourAt = 0;
+const VIZ_BARS = 28;
+
+function startAudioGraph() {
+  if (!audioGraph && useMediaSource && !reduceMotion && typeof AudioContext !== 'undefined') {
+    try {
+      const ctx = new AudioContext();
+      const source = ctx.createMediaElementSource(audio);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.75;
+      source.connect(analyser);
+      analyser.connect(ctx.destination);
+      audioGraph = { ctx, source, analyser, data: new Uint8Array(analyser.frequencyBinCount) };
+    } catch {
+      return;
+    }
+  }
+  // The music only plays while Web Audio is running
+  if (audioGraph && audioGraph.ctx.state !== 'running') audioGraph.ctx.resume().catch(() => {});
+}
+
+function drawVisualiser() {
+  vizFrame = 0;
+  const on = !!audioGraph && wantPlaying && els.app.dataset.playing === 'true' && !document.hidden
+    && !lyricsViewOpen && els.adminView.hidden;
+  els.app.dataset.viz = on ? 'on' : 'off';
+  if (!on) return;
+  const canvas = els.visualiser;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.round(canvas.clientWidth * dpr);
+  const h = Math.round(canvas.clientHeight * dpr);
+  if (!w || !h) return;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  if (Date.now() - vizColourAt > 1000) {
+    vizColour = getComputedStyle(els.app).getPropertyValue('--accent').trim() || '#FF8A3D';
+    vizColourAt = Date.now();
+  }
+  const { analyser, data } = audioGraph;
+  analyser.getByteFrequencyData(data);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  // A soft shade so the bars stand out on any cover
+  const shade = ctx.createLinearGradient(0, 0, 0, h);
+  shade.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  shade.addColorStop(1, 'rgba(0, 0, 0, 0.45)');
+  ctx.fillStyle = shade;
+  ctx.fillRect(0, 0, w, h);
+  // Bars spaced like hearing: more of them for the low and middle notes
+  const usable = data.length * 0.62;
+  const gap = w * 0.012;
+  const barW = (w - gap * (VIZ_BARS + 1)) / VIZ_BARS;
+  ctx.fillStyle = vizColour;
+  for (let i = 0; i < VIZ_BARS; i += 1) {
+    const from = Math.floor(usable ** (i / VIZ_BARS));
+    const to = Math.max(from + 1, Math.floor(usable ** ((i + 1) / VIZ_BARS)));
+    let sum = 0;
+    for (let b = from; b < to; b += 1) sum += data[b];
+    const level = sum / (to - from) / 255;
+    const target = Math.max(0.04, level ** 1.6);
+    // Rise quickly, fall gently
+    const prev = vizHeights[i] || 0;
+    const height = target > prev ? target : prev - Math.min(prev - target, 0.035);
+    vizHeights[i] = height;
+    const barH = height * h * 0.92;
+    const x = gap + i * (barW + gap);
+    ctx.globalAlpha = 0.55 + height * 0.45;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, h - barH, barW, barH, [barW / 2, barW / 2, 0, 0]);
+    else ctx.rect(x, h - barH, barW, barH);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  vizFrame = requestAnimationFrame(drawVisualiser);
+}
+
+function startVisualiser() {
+  if (!vizFrame && audioGraph) vizFrame = requestAnimationFrame(drawVisualiser);
+}
+
+// ---- Sleep timer ----
+
+let sleepAt = 0;
+let sleepFade = null;
+
+function cancelSleep() {
+  sleepAt = 0;
+  if (sleepFade) {
+    clearInterval(sleepFade);
+    sleepFade = null;
+    audio.volume = parseFloat(els.volume.value);
+  }
+  renderSleep();
+}
+
+function setSleep(minutes) {
+  cancelSleep();
+  if (minutes > 0) {
+    sleepAt = Date.now() + minutes * 60000;
+    if (!wantPlaying) play();
+  }
+  renderSleep();
+}
+
+function renderSleep() {
+  const left = sleepAt - Date.now();
+  els.sleepBtn.classList.toggle('on', sleepAt > 0);
+  setText(els.sleepLabel, sleepAt ? `Sleep in ${formatTime(Math.max(0, left) / 1000)}` : 'Sleep timer');
+  for (const item of els.sleepMenu.querySelectorAll('button')) {
+    item.setAttribute('aria-checked', String(item.dataset.minutes === '0' ? !sleepAt : false));
+  }
+}
+
+// Time's up: fade out over 8 seconds, then stop
+function checkSleep() {
+  if (!sleepAt) return;
+  renderSleep();
+  if (Date.now() < sleepAt || sleepFade) return;
+  if (!wantPlaying) return cancelSleep();
+  const start = audio.volume;
+  const began = Date.now();
+  sleepFade = setInterval(() => {
+    const t = (Date.now() - began) / 8000;
+    if (t >= 1) {
+      stop(); // also puts the volume back
+      toast('Sleep timer: playback stopped. Good night.');
+      return;
+    }
+    audio.volume = start * (1 - t);
+  }, 100);
+}
+
+// ---- Data saver ----
+
+function renderSaver() {
+  const words = { auto: 'Auto', on: 'On', off: 'Off' };
+  els.saverBtn.classList.toggle('on', useLowStream());
+  setText(els.saverLabel, `Data saver: ${words[saverSetting]}`);
+  els.saverBtn.title = useLowStream() ? 'Playing the data saver stream' : 'Playing in full quality';
+  for (const item of els.saverMenu.querySelectorAll('button')) {
+    item.setAttribute('aria-checked', String(item.dataset.saver === saverSetting));
+  }
+}
+
+// Switch streams straight away if the choice (or the connection) changes what's needed, or
+// reconnect now if a reconnection was waiting anyway
+function saverChanged() {
+  renderSaver();
+  if (wantPlaying && (!connection || !!connection.low !== useLowStream())) play();
+}
+
+function setSaver(value) {
+  saverSetting = value;
+  try { localStorage.setItem('taco-saver', value); } catch { /* storage unavailable */ }
+  saverChanged();
+}
+
+if (navigator.connection && navigator.connection.addEventListener) {
+  navigator.connection.addEventListener('change', saverChanged);
+}
+
+// ---- Menus (sleep timer, data saver) ----
+
+const menus = [
+  { button: els.sleepBtn, menu: els.sleepMenu, pick: (item) => setSleep(Number(item.dataset.minutes)) },
+  { button: els.saverBtn, menu: els.saverMenu, pick: (item) => setSaver(item.dataset.saver) },
+];
+
+function closeMenus(except) {
+  for (const m of menus) {
+    if (m === except || m.menu.hidden) continue;
+    m.menu.hidden = true;
+    m.button.setAttribute('aria-expanded', 'false');
+  }
+}
+
+for (const m of menus) {
+  m.button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    closeMenus(m);
+    const open = m.menu.hidden;
+    m.menu.hidden = !open;
+    m.button.setAttribute('aria-expanded', String(open));
+    if (open) (m.menu.querySelector('[aria-checked="true"]') || m.menu.querySelector('button')).focus();
+  });
+  m.menu.addEventListener('click', (event) => {
+    const item = event.target.closest('button');
+    if (!item) return;
+    event.stopPropagation();
+    m.pick(item);
+    closeMenus();
+    m.button.focus();
+  });
+  m.menu.addEventListener('keydown', (event) => {
+    const items = [...m.menu.querySelectorAll('button')];
+    const i = items.indexOf(document.activeElement);
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      items[(i + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+    } else if (event.key === 'Escape') {
+      closeMenus();
+      m.button.focus();
+    }
+  });
+}
+document.addEventListener('click', () => closeMenus());
+
+// ---- Pop-up messages ----
+
+function toast(text, { sub = '', img = '', ms = 4500 } = {}) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  if (img) {
+    const pic = document.createElement('img');
+    pic.alt = '';
+    pic.src = img;
+    pic.onerror = () => pic.remove();
+    el.append(pic);
+  }
+  const p = document.createElement('p');
+  p.textContent = text;
+  if (sub) {
+    const small = document.createElement('small');
+    small.textContent = sub;
+    p.append(small);
+  }
+  el.append(p);
+  els.toasts.append(el);
+  while (els.toasts.children.length > 3) els.toasts.firstElementChild.remove();
+  setTimeout(() => {
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 300);
+  }, ms);
+}
 
 // ---- Now playing ----
 
@@ -508,9 +805,10 @@ function showTrack(track) {
   void els.meta.offsetWidth; // restart the entrance animation
   els.meta.classList.add('enter');
   els.title.textContent = (track && track.title) || 'Taco Music';
-  els.artist.textContent = track ? (track.artist || '') : 'Live radio, 24/7';
+  els.artist.textContent = track ? (track.artist || (track.jingle ? 'Station ident' : '')) : 'Live radio, 24/7';
   els.album.textContent = (track && track.album) || '';
   els.requestedChip.hidden = !(track && track.requested);
+  els.djChip.hidden = !(track && track.live_dj);
   setCover(track && track.cover);
   // The full-screen lyrics header and backdrop
   els.lvTitle.textContent = els.title.textContent;
@@ -606,13 +904,160 @@ function render() {
     shownTrack = track;
     showTrack(track);
     if (!sameSong) showLyrics(track);
+    if (!sameSong) announceMyRequest(track);
   }
+  renderLike(track);
   renderProgress(track);
   renderHistory(history);
   renderQueue();
   updateRequestButtons();
   syncLyrics();
 }
+
+// ---- Likes ----
+
+function randomId() {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// An anonymous id, so the server counts each listener's like once
+let clientId;
+try {
+  clientId = localStorage.getItem('taco-client');
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(clientId || '')) {
+    clientId = randomId();
+    localStorage.setItem('taco-client', clientId);
+  }
+} catch {
+  clientId = randomId();
+}
+
+let likedSongs = new Set();
+try {
+  likedSongs = new Set(JSON.parse(localStorage.getItem('taco-liked') || '[]'));
+} catch { /* storage unavailable */ }
+let likeBusy = false;
+
+function saveLiked() {
+  try { localStorage.setItem('taco-liked', JSON.stringify([...likedSongs].slice(-500))); } catch { /* storage unavailable */ }
+}
+
+// The newest count: the feed (and live updates) carry it for the song playing now
+function likesFor(track) {
+  const np = feed && feed.now_playing;
+  if (np && track && np.id === track.id && typeof np.likes === 'number') return np.likes;
+  return track && typeof track.likes === 'number' ? track.likes : 0;
+}
+
+function renderLike(track) {
+  const id = track && !track.jingle ? track.id : null;
+  const liked = !!id && likedSongs.has(id);
+  els.like.disabled = !id || likeBusy;
+  els.like.setAttribute('aria-pressed', String(liked));
+  const label = liked ? 'Unlike this song' : 'Like this song';
+  if (els.like.getAttribute('aria-label') !== label) {
+    els.like.setAttribute('aria-label', label);
+    els.like.title = label;
+  }
+  const count = id ? likesFor(track) : 0;
+  setText(els.likeCount, count > 0 ? (count > 999 ? `${Math.floor(count / 1000)}k` : String(count)) : '');
+}
+
+async function toggleLike() {
+  const track = shownTrack;
+  if (!track || !track.id || track.jingle || likeBusy) return;
+  const liked = !likedSongs.has(track.id);
+  likeBusy = true;
+  // Show it straight away; the server's count follows
+  if (liked) likedSongs.add(track.id);
+  else likedSongs.delete(track.id);
+  const np = feed && feed.now_playing;
+  if (np && np.id === track.id) np.likes = Math.max(0, likesFor(track) + (liked ? 1 : -1));
+  renderLike(track);
+  try {
+    const res = await fetch(LIKE_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ song_id: track.id, client: clientId, liked }),
+    });
+    const reply = await res.json().catch(() => ({}));
+    if (!res.ok || !reply.ok) throw new Error(reply.error || `HTTP ${res.status}`);
+    const latest = feed && feed.now_playing;
+    if (latest && latest.id === track.id) latest.likes = reply.likes;
+    saveLiked();
+  } catch {
+    if (liked) likedSongs.delete(track.id);
+    else likedSongs.add(track.id);
+    toast('Couldn’t save that like. Try again in a moment.');
+  } finally {
+    likeBusy = false;
+    renderLike(shownTrack);
+  }
+}
+
+els.like.addEventListener('click', toggleLike);
+
+// ---- Sharing ----
+
+async function share() {
+  const track = shownTrack && !shownTrack.jingle ? shownTrack : null;
+  const url = new URL('./', location.href).href;
+  const text = track && track.title
+    ? `Listening to “${track.title}”${track.artist ? ` by ${track.artist}` : ''} on Taco Music`
+    : 'Listen to Taco Music, live radio 24/7';
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Taco Music', text, url });
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // closed the share sheet
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(`${text} ${url}`);
+    toast('Link copied', { sub: 'Paste it anywhere to share' });
+  } catch {
+    toast('Share this link', { sub: url, ms: 8000 });
+  }
+}
+
+els.share.addEventListener('click', share);
+
+// ---- Your request is playing ----
+
+let myRequests = [];
+try {
+  myRequests = JSON.parse(localStorage.getItem('taco-my-requests') || '[]').filter((r) => r && r.id);
+} catch { /* storage unavailable */ }
+
+function saveMyRequests() {
+  myRequests = myRequests.filter((r) => Date.now() - r.at < 3 * 3600 * 1000).slice(-10);
+  try { localStorage.setItem('taco-my-requests', JSON.stringify(myRequests)); } catch { /* storage unavailable */ }
+}
+
+function announceMyRequest(track) {
+  if (!track || !track.requested || !track.id || !myRequests.some((r) => r.id === track.id)) return;
+  myRequests = myRequests.filter((r) => r.id !== track.id);
+  saveMyRequests();
+  const about = `${track.title}${track.artist ? ` – ${track.artist}` : ''}`;
+  toast('Your request is playing now', { sub: about, img: track.cover || FALLBACK_COVER, ms: 7000 });
+  // And on the lock screen, if the app's in the background and the listener said yes to that
+  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    const options = { body: about, icon: track.cover || 'icons/icon-192.png', tag: 'taco-request' };
+    navigator.serviceWorker && navigator.serviceWorker.ready
+      ? navigator.serviceWorker.ready.then((reg) => reg.showNotification('Your request is playing now', options)).catch(() => {})
+      : new Notification('Your request is playing now', options);
+  }
+}
+
+els.notifyOffer.addEventListener('click', async () => {
+  els.notifyOffer.hidden = true;
+  try {
+    if (await Notification.requestPermission() === 'granted') toast('We’ll let you know when it plays.');
+  } catch { /* not supported */ }
+});
 
 // ---- Song requests ----
 
@@ -744,6 +1189,10 @@ async function requestSong(song) {
       setRequestStatus(reply.message || 'Requested!', 'success');
       setRequestUntil(Date.now() + (reply.cooldown_seconds || 180) * 1000);
       if (feed && reply.requests) feed.requests = reply.requests;
+      myRequests.push({ id: song.id, at: Date.now() });
+      saveMyRequests();
+      // Offer a notification for when it plays, if the app might be in the background by then
+      els.notifyOffer.hidden = !('Notification' in window) || Notification.permission !== 'default';
     } else {
       if (reply.retry_after) setRequestUntil(Date.now() + reply.retry_after * 1000);
       setRequestStatus(reply.error || 'That didn’t work. Try again in a moment.', 'error');
@@ -1137,6 +1586,10 @@ function setCredit(source) {
 }
 
 function renderLyrics(result, track) {
+  // A live DJ's song can start anywhere, so its lyrics can't follow along: words only
+  if (result && track.live_dj && result.lines.length) {
+    result = { ...result, lines: [], plain: result.plain || result.lines.map((line) => line.text).join('\n') };
+  }
   lyricsLines = [];
   lyricsHasWords = false;
   activeLine = -1;
@@ -1176,6 +1629,14 @@ async function showLyrics(track) {
   setCredit();
   if (!track || !track.title) {
     setLyricsStatus('Lyrics will show up here when a song is playing.', 'idle');
+    return;
+  }
+  if (track.jingle) {
+    setLyricsStatus('A word from the station. The music’s back in a moment.', 'idle');
+    return;
+  }
+  if (track.live_dj && (track.text || '').startsWith('Live: ')) {
+    setLyricsStatus('A live DJ is on air. Lyrics show up when they play a song.', 'idle');
     return;
   }
   setLyricsStatus('Finding lyrics…', 'loading');
@@ -1334,6 +1795,7 @@ function closeLyricsView(fromHistory) {
     els.lyricsView.hidden = true;
     els.lyricsPanel.prepend(els.lyricsStage);
     jumpToCurrentLine();
+    startVisualiser();
   }, 300);
   if (focusBeforeLyrics && document.contains(focusBeforeLyrics)) focusBeforeLyrics.focus({ preventScroll: true });
 }
@@ -1342,7 +1804,10 @@ els.nowLine.addEventListener('click', openLyricsView);
 els.lyricsExpand.addEventListener('click', openLyricsView);
 els.lvClose.addEventListener('click', () => closeLyricsView(false));
 els.lvPlay.addEventListener('click', () => (wantPlaying ? stop() : play()));
-window.addEventListener('popstate', () => closeLyricsView(true));
+window.addEventListener('popstate', () => {
+  closeLyricsView(true);
+  if (window.TacoAdmin && window.TacoAdmin.isOpen()) window.TacoAdmin.close(true);
+});
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && lyricsViewOpen) closeLyricsView(false);
 });
@@ -1360,11 +1825,91 @@ els.lvHead.addEventListener('pointerup', (event) => {
 });
 els.lvHead.addEventListener('pointercancel', () => { swipeFrom = null; });
 
+// ---- Top songs ----
+
+let charts = null;
+let chartsAt = 0;
+let chartKind = 'most_liked';
+const CHART_WORDS = {
+  most_liked: { one: 'like', many: 'likes', empty: 'No likes yet. Tap the heart on a song you love.' },
+  most_played: { one: 'play', many: 'plays', empty: 'Songs will show up here as they play.' },
+  most_requested: { one: 'request', many: 'requests', empty: 'No requests yet. Ask for a song in Request.' },
+};
+
+function renderCharts() {
+  for (const b of els.topPanel.querySelectorAll('[data-chart]')) b.setAttribute('aria-pressed', String(b.dataset.chart === chartKind));
+  const items = (charts && charts[chartKind]) || [];
+  const words = CHART_WORDS[chartKind];
+  els.charts.replaceChildren(...items.slice(0, 20).map((item, i) => {
+    const li = document.createElement('li');
+    const rank = document.createElement('span');
+    rank.className = 'rank';
+    rank.textContent = String(i + 1);
+    const count = document.createElement('span');
+    count.className = 'count';
+    count.textContent = `${item.count} ${item.count === 1 ? words.one : words.many}`;
+    li.append(rank, makeThumb(item.cover), makeText(item), count);
+    return li;
+  }));
+  els.chartsEmpty.hidden = items.length > 0;
+  if (charts) els.chartsEmpty.textContent = words.empty;
+}
+
+async function loadCharts() {
+  renderCharts();
+  if (Date.now() - chartsAt < 60000) return; // at most once a minute
+  chartsAt = Date.now();
+  try {
+    const res = await fetch(CHARTS_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    charts = await res.json();
+  } catch {
+    chartsAt = 0;
+    if (!charts) els.chartsEmpty.textContent = 'Couldn’t load the charts. Try again in a moment.';
+  }
+  renderCharts();
+}
+
+els.topPanel.querySelector('.segmented').addEventListener('click', (event) => {
+  const b = event.target.closest('[data-chart]');
+  if (!b) return;
+  chartKind = b.dataset.chart;
+  renderCharts();
+});
+
+// ---- Station admin (loaded only when opened) ----
+
+let adminLoading = null;
+
+function openAdmin() {
+  if (!adminLoading) {
+    adminLoading = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'admin.js';
+      script.onload = resolve;
+      script.onerror = () => {
+        adminLoading = null;
+        reject(new Error('admin.js'));
+      };
+      document.head.append(script);
+    });
+  }
+  adminLoading.then(() => window.TacoAdmin.open({
+    api: REQUEST_API, libraryUrl: LIBRARY_URL, formatTime, makeThumb, makeText, toast,
+    library: () => loadLibrary().then(() => library || []),
+    nowPlaying: () => feed && feed.now_playing,
+  })).catch(() => toast('Couldn’t open the admin page. Check your connection.'));
+}
+
+els.adminOpen.addEventListener('click', openAdmin);
+if (location.hash === '#admin') openAdmin();
+
 // ---- Tabs ----
 
 const tabs = [
   { name: 'lyrics', tab: els.tabLyrics, panel: els.lyricsPanel },
   { name: 'request', tab: els.tabRequest, panel: els.requestPanel },
+  { name: 'top', tab: els.tabTop, panel: els.topPanel },
   { name: 'recent', tab: els.tabRecent, panel: els.recentPanel },
 ];
 
@@ -1378,6 +1923,7 @@ function selectTab(name) {
   try { localStorage.setItem('taco-tab', name); } catch { /* storage unavailable */ }
   if (name === 'lyrics') jumpToCurrentLine();
   if (name === 'request') loadLibrary();
+  if (name === 'top') loadCharts();
 }
 
 tabs.forEach((t, i) => {
@@ -1425,6 +1971,10 @@ function onLive(update, received) {
   wasLive = true;
   liveRetryMs = 5000;
   if (typeof update.server_time === 'number') syncClockLive(update.server_time, received);
+  // Likes and the listener count, as they change
+  const playing = feed && feed.now_playing;
+  if (playing && update.id && playing.id === update.id && typeof update.likes === 'number' && !likeBusy) playing.likes = update.likes;
+  if (feed && typeof update.listeners === 'number') feed.listeners = update.listeners;
   // The song or the request queue changed: get the full feed now, not at the next check
   const key = `${update.text}|${update.started_at}|${update.requests}`;
   const np = feed && feed.now_playing;
@@ -1506,10 +2056,16 @@ function poll() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) poll();
+  if (!document.hidden) {
+    poll();
+    startVisualiser();
+  }
 });
 setInterval(render, 1000);
 setInterval(checkLive, 1000);
+setInterval(checkSleep, 1000);
+renderSleep();
+renderSaver();
 tick();
 poll();
 connectLive();

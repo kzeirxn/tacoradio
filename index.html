@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Taco Music</title>
   <meta name="description" content="Taco Music: live radio, playing 24/7.">
-  <meta name="theme-color" content="#120C09" id="theme-color">
+  <meta name="theme-color" content="#06070D" id="theme-color">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Taco Music">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -18,116 +18,107 @@
 </head>
 <body>
   <div class="app" data-playing="false">
-    <div class="bg" aria-hidden="true">
-      <span class="blob b1"></span>
-      <span class="blob b2"></span>
-      <span class="blob b3"></span>
+    <div class="ambient" aria-hidden="true">
+      <img class="ambient-art is-front" id="ambient-a" alt="">
+      <img class="ambient-art" id="ambient-b" alt="">
     </div>
 
     <header class="topbar">
       <div class="brand">
-        <img src="icons/icon.svg" alt="" width="36" height="36">
+        <img src="icons/icon.svg" alt="" width="32" height="32">
         <span>Taco Music</span>
       </div>
       <div class="status">
-        <span class="pill live-badge" id="live-badge" data-live="false">Connecting</span>
-        <span class="pill listeners" id="listeners" title="Listening now">
+        <span class="pill status-pill" id="live-badge" data-live="false">Connecting</span>
+        <span class="pill status-pill listeners" id="listeners" title="Listening now">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a8 8 0 0 0-8 8v5a3 3 0 0 0 3 3h1a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H6v-1a6 6 0 0 1 12 0v1h-2a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h1a3 3 0 0 0 3-3v-5a8 8 0 0 0-8-8z"/></svg>
           <span id="listener-count">–</span>
         </span>
+        <div class="menu-wrap">
+          <button class="icon-btn" id="more-btn" type="button" aria-label="More" title="More" aria-haspopup="true" aria-expanded="false" aria-controls="more-menu">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+          </button>
+          <div class="menu menu-right" id="more-menu" role="menu" hidden>
+            <p class="menu-label">Data saver</p>
+            <button type="button" role="menuitemradio" data-saver="auto">Automatic<small>On when you’re using mobile data</small></button>
+            <button type="button" role="menuitemradio" data-saver="on">Always on<small>Half the data, lower sound quality</small></button>
+            <button type="button" role="menuitemradio" data-saver="off">Off<small>Best sound quality</small></button>
+            <hr>
+            <button type="button" role="menuitem" id="install" hidden>Install the app</button>
+            <p class="menu-note" id="ios-hint" hidden>To install, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>.</p>
+            <button type="button" role="menuitem" id="admin-open">Station admin</button>
+          </div>
+        </div>
       </div>
     </header>
 
     <main class="layout">
       <section class="player" aria-label="Now playing">
-        <div class="art-wrap">
-          <div class="vinyl" aria-hidden="true">
-            <div class="vinyl-label"><img id="vinyl-cover" src="icons/icon-512.png" alt=""></div>
-          </div>
-          <div class="art">
-            <img class="cover is-front" id="cover-a" src="icons/icon-512.png" alt="" width="512" height="512">
-            <img class="cover" id="cover-b" alt="" width="512" height="512">
-            <canvas class="visualiser" id="visualiser" aria-hidden="true"></canvas>
-          </div>
+        <div class="art">
+          <img class="cover is-front" id="cover-a" src="icons/icon-maskable-512.png" alt="" width="512" height="512">
+          <img class="cover" id="cover-b" alt="" width="512" height="512">
+          <canvas class="visualiser" id="visualiser" aria-hidden="true"></canvas>
         </div>
 
         <div class="meta" id="meta">
-          <p class="eyebrow">
-            <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-            <span>Now playing</span>
-            <span class="chip" id="requested-chip" hidden>Requested</span>
-            <span class="chip chip-live" id="dj-chip" hidden>Live DJ</span>
-          </p>
-          <h1 id="title">Taco Music</h1>
-          <p class="artist" id="artist">Live radio, 24/7</p>
-          <p class="album" id="album"></p>
-          <button class="now-line" id="now-line" type="button" hidden>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
-            <span class="now-line-text" id="now-line-text"></span>
+          <div class="meta-text">
+            <p class="tags">
+              <span class="chip" id="requested-chip" hidden>Requested</span>
+              <span class="chip chip-live" id="dj-chip" hidden>Live DJ</span>
+              <span class="chip chip-saver" id="saver-chip" hidden>Data saver</span>
+            </p>
+            <h1 id="title">Taco Music</h1>
+            <p class="artist" id="artist">Live radio, 24/7</p>
+            <p class="album" id="album"></p>
+          </div>
+          <button class="like" id="like" type="button" aria-pressed="false" aria-label="Like this song" title="Like this song" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path class="heart-line" d="M12 20.6l-1.3-1.2C5.9 15.1 3 12.4 3 9.1 3 6.4 5.1 4.3 7.8 4.3c1.5 0 3 .7 4.2 1.9 1.2-1.2 2.7-1.9 4.2-1.9 2.7 0 4.8 2.1 4.8 4.8 0 3.3-2.9 6-7.7 10.3L12 20.6zm-4.2-14.3c-1.6 0-2.8 1.2-2.8 2.8 0 2.3 2.4 4.6 7 8.8 4.6-4.2 7-6.5 7-8.8 0-1.6-1.2-2.8-2.8-2.8-1.2 0-2.5.8-3.3 2l-.9 1.3-.9-1.3c-.8-1.2-2.1-2-3.3-2z"/><path class="heart-fill" d="M12 20.6l-1.3-1.2C5.9 15.1 3 12.4 3 9.1 3 6.4 5.1 4.3 7.8 4.3c1.5 0 3 .7 4.2 1.9 1.2-1.2 2.7-1.9 4.2-1.9 2.7 0 4.8 2.1 4.8 4.8 0 3.3-2.9 6-7.7 10.3L12 20.6z"/></svg>
+            <span class="like-count" id="like-count"></span>
           </button>
         </div>
+
+        <button class="now-line" id="now-line" type="button" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+          <span class="now-line-text" id="now-line-text"></span>
+        </button>
 
         <div class="progress" id="progress" hidden>
           <div class="bar"><div class="fill" id="progress-fill"></div></div>
           <div class="times"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
         </div>
 
-        <div class="controls">
-          <div class="transport">
-            <button class="icon-btn round like" id="like" type="button" aria-pressed="false" aria-label="Like this song" title="Like this song" disabled>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path class="heart-line" d="M12 20.6l-1.3-1.2C5.9 15.1 3 12.4 3 9.1 3 6.4 5.1 4.3 7.8 4.3c1.5 0 3 .7 4.2 1.9 1.2-1.2 2.7-1.9 4.2-1.9 2.7 0 4.8 2.1 4.8 4.8 0 3.3-2.9 6-7.7 10.3L12 20.6zm-4.2-14.3c-1.6 0-2.8 1.2-2.8 2.8 0 2.3 2.4 4.6 7 8.8 4.6-4.2 7-6.5 7-8.8 0-1.6-1.2-2.8-2.8-2.8-1.2 0-2.5.8-3.3 2l-.9 1.3-.9-1.3c-.8-1.2-2.1-2-3.3-2z"/><path class="heart-fill" d="M12 20.6l-1.3-1.2C5.9 15.1 3 12.4 3 9.1 3 6.4 5.1 4.3 7.8 4.3c1.5 0 3 .7 4.2 1.9 1.2-1.2 2.7-1.9 4.2-1.9 2.7 0 4.8 2.1 4.8 4.8 0 3.3-2.9 6-7.7 10.3L12 20.6z"/></svg>
-              <span class="like-count" id="like-count"></span>
-            </button>
-            <button class="play" id="play" type="button" data-state="idle" aria-label="Play">
-              <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.6v12.8a1 1 0 0 0 1.52.85l10.2-6.4a1 1 0 0 0 0-1.7L9.52 4.75A1 1 0 0 0 8 5.6z"/></svg>
-              <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4.5" height="14" rx="1.2"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.2"/></svg>
-              <span class="spinner" aria-hidden="true"></span>
-            </button>
-            <button class="icon-btn round" id="share" type="button" aria-label="Share" title="Share">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.6a1 1 0 0 1 .7.3l4 4a1 1 0 0 1-1.4 1.4L13 6v8.5a1 1 0 1 1-2 0V6L8.7 8.3a1 1 0 0 1-1.4-1.4l4-4a1 1 0 0 1 .7-.3zM5 11a1 1 0 0 1 1 1v6.5c0 .3.2.5.5.5h11c.3 0 .5-.2.5-.5V12a1 1 0 1 1 2 0v6.5c0 1.4-1.1 2.5-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5V12a1 1 0 0 1 1-1z"/></svg>
-            </button>
-          </div>
-
-          <label class="volume" id="volume-row">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5a1 1 0 0 0 1 1h3l4.4 3.67A1 1 0 0 0 14 18.4V5.6a1 1 0 0 0-1.6-.77L8 8.5H5a1 1 0 0 0-1 1zm12.5-2.3a.75.75 0 0 1 1.06.02 7 7 0 0 1 0 9.56.75.75 0 1 1-1.08-1.04 5.5 5.5 0 0 0 0-7.48.75.75 0 0 1 .02-1.06z"/></svg>
-            <span class="visually-hidden">Volume</span>
-            <input type="range" id="volume" min="0" max="1" step="0.01" value="1">
-          </label>
-        </div>
-
-        <div class="extras">
+        <div class="transport">
           <div class="menu-wrap">
-            <button class="pill extra" id="sleep-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="sleep-menu">
+            <button class="icon-btn round" id="sleep-btn" type="button" aria-label="Sleep timer" title="Sleep timer" aria-haspopup="true" aria-expanded="false" aria-controls="sleep-menu">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2.6a1 1 0 0 1 .3 1.1A7.5 7.5 0 0 0 20.3 14a1 1 0 0 1 1.1 1.4A9.5 9.5 0 1 1 13.4 2.3a1 1 0 0 1 1.1.3zm-2.6 2.1a7.5 7.5 0 1 0 7.4 11.4A9.5 9.5 0 0 1 11.9 4.7z"/></svg>
-              <span id="sleep-label">Sleep timer</span>
+              <span class="badge" id="sleep-label"></span>
             </button>
-            <div class="menu" id="sleep-menu" role="menu" hidden>
+            <div class="menu menu-up" id="sleep-menu" role="menu" hidden>
+              <p class="menu-label">Stop playing after</p>
               <button type="button" role="menuitemradio" data-minutes="15">15 minutes</button>
               <button type="button" role="menuitemradio" data-minutes="30">30 minutes</button>
               <button type="button" role="menuitemradio" data-minutes="60">1 hour</button>
               <button type="button" role="menuitemradio" data-minutes="0">Off</button>
             </div>
           </div>
-          <div class="menu-wrap">
-            <button class="pill extra" id="saver-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="saver-menu">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zm0 2a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm0 2a1 1 0 0 1 1 1v5.6l1.8-1.8a1 1 0 1 1 1.4 1.4l-3.5 3.5a1 1 0 0 1-1.4 0l-3.5-3.5a1 1 0 1 1 1.4-1.4l1.8 1.8V8a1 1 0 0 1 1-1z"/></svg>
-              <span id="saver-label">Data saver</span>
-            </button>
-            <div class="menu" id="saver-menu" role="menu" hidden>
-              <button type="button" role="menuitemradio" data-saver="auto">Automatic<small>On when using mobile data</small></button>
-              <button type="button" role="menuitemradio" data-saver="on">Always on<small>Half the data, lower sound quality</small></button>
-              <button type="button" role="menuitemradio" data-saver="off">Off<small>Best sound quality</small></button>
-            </div>
-          </div>
+          <button class="play" id="play" type="button" data-state="idle" aria-label="Play">
+            <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.6v12.8a1 1 0 0 0 1.52.85l10.2-6.4a1 1 0 0 0 0-1.7L9.52 4.75A1 1 0 0 0 8 5.6z"/></svg>
+            <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4.5" height="14" rx="1.2"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.2"/></svg>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+          <button class="icon-btn round" id="share" type="button" aria-label="Share" title="Share">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.6a1 1 0 0 1 .7.3l4 4a1 1 0 0 1-1.4 1.4L13 6v8.5a1 1 0 1 1-2 0V6L8.7 8.3a1 1 0 0 1-1.4-1.4l4-4a1 1 0 0 1 .7-.3zM5 11a1 1 0 0 1 1 1v6.5c0 .3.2.5.5.5h11c.3 0 .5-.2.5-.5V12a1 1 0 1 1 2 0v6.5c0 1.4-1.1 2.5-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5V12a1 1 0 0 1 1-1z"/></svg>
+          </button>
         </div>
 
-        <p class="notice" id="notice" role="status"></p>
+        <label class="volume" id="volume-row">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5a1 1 0 0 0 1 1h3l4.4 3.67A1 1 0 0 0 14 18.4V5.6a1 1 0 0 0-1.6-.77L8 8.5H5a1 1 0 0 0-1 1z"/></svg>
+          <span class="visually-hidden">Volume</span>
+          <input type="range" id="volume" min="0" max="1" step="0.01" value="1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5a1 1 0 0 0 1 1h3l4.4 3.67A1 1 0 0 0 14 18.4V5.6a1 1 0 0 0-1.6-.77L8 8.5H5a1 1 0 0 0-1 1zm12.5-2.3a.75.75 0 0 1 1.06.02 7 7 0 0 1 0 9.56.75.75 0 1 1-1.08-1.04 5.5 5.5 0 0 0 0-7.48.75.75 0 0 1 .02-1.06z"/></svg>
+        </label>
 
-        <button class="pill install" id="install" type="button" hidden>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v9.59l3.3-3.3a1 1 0 1 1 1.4 1.42l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.42l3.3 3.3V4a1 1 0 0 1 1-1zM5 19a1 1 0 1 0 0 2h14a1 1 0 1 0 0-2H5z"/></svg>
-          Install app
-        </button>
-        <p class="ios-hint" id="ios-hint" hidden>To install, tap <strong>Share</strong> and then <strong>Add to Home Screen</strong>.</p>
+        <p class="notice" id="notice" role="status"></p>
       </section>
 
       <section class="panel" aria-label="Lyrics, song requests and recently played">
@@ -145,7 +136,7 @@
             <div class="lyrics" id="lyrics" data-synced="false"></div>
           </div>
           <div class="lyrics-foot">
-            <p class="credit" id="lyrics-credit">Lyrics from <a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a></p>
+            <p class="credit" id="lyrics-credit">Lyrics from <a href="https://synclrc.dev" target="_blank" rel="noopener">SyncLRC</a></p>
             <button class="icon-btn" id="lyrics-expand" type="button" aria-label="Full-screen lyrics" title="Full-screen lyrics">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V5a1 1 0 0 1 1-1h4a1 1 0 1 1 0 2H6v3a1 1 0 1 1-2 0zm11-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0V6h-2a1 1 0 0 1-1-1zM5 14a1 1 0 0 1 1 1v3h3a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zm14 0a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 1 1 0-2h3v-3a1 1 0 0 1 1-1z"/></svg>
             </button>
@@ -186,16 +177,12 @@
       </section>
     </main>
 
-    <footer class="footer">
-      <button class="link-btn" id="admin-open" type="button">Station admin</button>
-    </footer>
-
     <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
     <div class="lyrics-view" id="lyrics-view" role="dialog" aria-modal="true" aria-labelledby="lv-title" hidden>
-      <div class="lv-backdrop" aria-hidden="true"><img id="lv-art" src="icons/icon-512.png" alt=""></div>
+      <div class="lv-backdrop" aria-hidden="true"><img id="lv-art" src="icons/icon-maskable-512.png" alt=""></div>
       <header class="lv-head" id="lv-head">
-        <img class="lv-thumb" id="lv-thumb" src="icons/icon-512.png" alt="" width="48" height="48">
+        <img class="lv-thumb" id="lv-thumb" src="icons/icon-maskable-512.png" alt="" width="48" height="48">
         <div class="lv-meta">
           <p class="lv-title" id="lv-title">Taco Music</p>
           <p class="lv-artist" id="lv-artist"></p>
@@ -221,7 +208,6 @@
     <div class="admin-view" id="admin-view" role="dialog" aria-modal="true" aria-label="Station admin" hidden></div>
   </div>
 
-  <script src="vendor/js-yaml.min.js" defer></script>
   <script src="app.js" defer></script>
 </body>
 </html>

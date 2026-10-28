@@ -1,17 +1,17 @@
 // Caches the app itself so it still opens without a connection.
 // The stream and the now-playing feed live on another domain and always go to the network.
-const CACHE = 'taco-music-v13';
+const CACHE = 'taco-music-v14';
 const APP_FILES = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './admin.js',
-  './vendor/js-yaml.min.js',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',
   './icons/icon-512.png',
+  './icons/icon-maskable-512.png',
   './icons/apple-touch-icon.png',
   './fonts/bricolage-grotesque-latin.woff2',
 ];

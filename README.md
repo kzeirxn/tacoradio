@@ -14,15 +14,22 @@ An installable web player (PWA) for the Taco Music live stream.
   own smaller lines, otherwise line-by-line timings or just the words. Timings are only used for a
   recording within `SYNC_TOLERANCE` seconds of the length the feed gives for the playing file; for
   another version, the words show without following along.
+- **Fitted to the station's files:** SyncLRC keeps one version of each song's lyrics, timed for
+  whichever recording it met first, and different copies of a song can be timed a second or more
+  apart. So the app also asks SyncLRC for every version it knows, with each one's length, and uses
+  the line timings of the version made for a recording as long as the station's file (where several
+  copies are that long, the timing most of them agree on, so one badly timed copy can't win). Word
+  timings are checked against that version line by line and moved to match it if they're out by
+  `SHIFT_MIN` seconds or more. Lyrics are only remembered on the device once they've been fitted.
 - **Held words glow:** as on Apple Music, a word sung for a second or more (`LONG_WORD`) lights up
   letter by letter, each letter lifting a little, with a soft glow in the cover's colour that builds
   while it's held and fades over `GLOW_FADE` seconds after. Not for listeners who ask for reduced
   motion.
 - **Staying within SyncLRC's limit:** SyncLRC allows each listener 30 requests a minute, so the app
-  keeps under `SYNCLRC_LIMIT` (25), queueing anything over it until there's room. Each song is asked
-  about at most three times: by its title, once more without notes like "(Remastered 2011)" if that
-  found nothing, and once more after `KARAOKE_RETRY_MS` if the word timings weren't ready (asking
-  can set SyncLRC fetching them). What it finds is remembered on the device for a week (songs it
+  keeps under `SYNCLRC_LIMIT` (25), queueing anything over it until there's room. A song takes at
+  most four requests: its lyrics and its versions, once more without notes like "(Remastered 2011)"
+  if the title found nothing, and once more after `KARAOKE_RETRY_MS` if the word timings weren't
+  ready (asking can set SyncLRC fetching them). The admin page's upload check takes one. What it finds is remembered on the device for a week (songs it
   has nothing for, for 6 hours), so a song that comes round again isn't asked about. If SyncLRC
   answers "too many requests", the app leaves it alone for `SYNCLRC_PAUSE_MS`.
 

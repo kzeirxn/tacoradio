@@ -4,7 +4,11 @@
 // see the stats. Loaded by app.js only when someone opens it, and only works with the admin password.
 (() => {
   const TOKEN_KEY = 'taco-admin-token';
-  const CHUNK = 900 * 1024; // upload pieces stay under the proxy's 1 MB limit
+  // Uploads go in pieces of 4 MB, or under 1 MB if the proxy turns big ones away, three files at a time
+  const BIG_CHUNK = 4 * 1024 * 1024;
+  const SMALL_CHUNK = 900 * 1024;
+  const PARALLEL = 3;
+  const AUDIO_FILE = /\.(mp3|m4a|aac|flac|ogg|opus|wav)$/i;
   const view = document.getElementById('admin-view');
   let app = null; // helpers from app.js
   let isOpen = false;
@@ -17,7 +21,8 @@
   let busy = false;
   let uploadKind = 'song';
   let topKind = 'most_played';
-  const uploads = []; // { file, kind, state, received, message, tone }
+  const uploads = []; // { file, kind, state, received, message, tone, result, el }
+  let chunkSize = BIG_CHUNK;
 
   try { token = localStorage.getItem(TOKEN_KEY) || ''; } catch { /* storage unavailable */ }
 
@@ -88,7 +93,9 @@
       },
       body: raw || (body ? JSON.stringify(body) : undefined),
     });
-    const reply = await res.json().catch(() => ({ ok: false, error: `The server answered ${res.status}.` }));
+    let reply = await res.json().catch(() => null);
+    // Not an answer from our server (the proxy's own error page, for example)
+    if (!reply || typeof reply !== 'object') reply = { ok: false, error: `The server answered ${res.status}.`, unparsed: true };
     if (res.status === 401 && path !== 'login') {
       signOut('Your sign-in has run out. Sign in again.');
       throw new Error('signed out');
@@ -207,6 +214,7 @@
           try { localStorage.setItem(TOKEN_KEY, token); } catch { /* storage unavailable */ }
           render();
           refresh();
+          pump(); // carry on with any uploads that were waiting
           return;
         }
         note.textContent = reply.error || 'That didn’t work.';
@@ -380,6 +388,11 @@
 
   // ---- Uploads ----
 
+  let uploadList = null; // kept between redraws, so its scroll position stays put
+  let uploadSummary = null;
+  let active = 0;
+  let wakeLock = null;
+
   function renderUpload() {
     if (!parts.upload || !document.contains(parts.upload)) return;
     const kinds = h('div', { class: 'segmented', role: 'group', 'aria-label': 'What you’re uploading' },
@@ -390,50 +403,186 @@
       addFiles(input.files);
       input.value = '';
     });
+    // A whole folder at once (not offered on iPhones and iPads, which can't pick folders)
+    const folder = h('input', { type: 'file', multiple: true, class: 'visually-hidden', id: 'admin-folder' });
+    const folders = 'webkitdirectory' in folder && !/iPhone|iPad|iPod/.test(navigator.userAgent);
+    if (folders) folder.webkitdirectory = true;
+    folder.addEventListener('change', () => {
+      addFiles([...folder.files].sort((a, b) => (a.webkitRelativePath || a.name).localeCompare(b.webkitRelativePath || b.name)));
+      folder.value = '';
+    });
+    const max = status ? status.max_upload_mb : 500;
     const zone = h('label', { class: 'dropzone', for: 'admin-files' },
       icon('upload'),
       h('span', { text: uploadKind === 'song' ? 'Choose songs or drop them here' : 'Choose jingles or drop them here' }),
       h('small', { text: uploadKind === 'song'
-        ? `MP3, M4A, FLAC, OGG or WAV, up to ${status ? status.max_upload_mb : 100} MB. Duplicates are turned away and lyrics are checked.`
+        ? `MP3, M4A, FLAC, OGG or WAV, up to ${max} MB each. Pick as many as you like${folders ? ', or drop a whole folder' : ''}. Duplicates are turned away and lyrics are checked.`
         : 'Short station idents, up to 90 seconds. One plays every few songs.' }));
     zone.addEventListener('dragover', (event) => { event.preventDefault(); zone.classList.add('over'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('over'));
-    zone.addEventListener('drop', (event) => {
+    zone.addEventListener('drop', async (event) => {
       event.preventDefault();
       zone.classList.remove('over');
-      addFiles(event.dataTransfer.files);
+      addFiles(await droppedFiles(event.dataTransfer));
     });
-    const list = h('ul', { class: 'uploads' }, uploads.map((u) => h('li', { 'data-tone': u.tone || '' },
-      h('div', { class: 'upload-name' }, h('span', { text: u.file.name }), h('small', { text: u.message })),
-      u.state === 'sending' ? h('div', { class: 'bar' }, h('div', { class: 'fill', style: `transform: scaleX(${u.received / u.file.size})` })) : null)));
+    const folderPick = folders ? h('p', { class: 'folder-pick' }, h('label', { class: 'link-btn', for: 'admin-folder', text: 'Or choose a whole folder' })) : null;
+    if (!uploadList) {
+      uploadList = h('ul', { class: 'uploads', 'aria-label': 'Uploads' });
+      uploadSummary = h('div', { class: 'upload-summary', role: 'status' });
+    }
+    for (const u of uploads) if (!u.el) uploadList.append(row(u));
     const blocked = status && !(uploadKind === 'song' ? status.uploads : status.jingle_uploads)
       ? h('p', { class: 'admin-note', text: 'The server can’t save uploads yet: its upload folder isn’t set up.' }) : null;
-    fill(parts.upload, kinds, blocked, input, zone, list);
+    fill(parts.upload, kinds, blocked, input, folder, zone, folderPick, uploadSummary, uploadList);
+    renderSummary();
+  }
+
+  // Everything in a dropped folder (and its folders), or just the dropped files
+  async function droppedFiles(transfer) {
+    const entries = [...(transfer.items || [])].map((item) => item.webkitGetAsEntry && item.webkitGetAsEntry()).filter(Boolean);
+    if (!entries.length) return [...transfer.files];
+    const files = [];
+    const walk = async (entry) => {
+      if (entry.isFile) {
+        files.push(await new Promise((resolve, reject) => { entry.file(resolve, reject); }));
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        for (;;) {
+          const batch = await new Promise((resolve, reject) => { reader.readEntries(resolve, reject); });
+          if (!batch.length) break;
+          for (const e of batch) await walk(e);
+        }
+      }
+    };
+    for (const entry of entries) {
+      try { await walk(entry); } catch { /* unreadable: skip it */ }
+    }
+    return files.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function row(u) {
+    u.el = h('li', {},
+      h('div', { class: 'upload-name' }, h('span', { text: u.file.name }), h('small', {})),
+      h('div', { class: 'bar' }, h('div', { class: 'fill' })));
+    updateRow(u);
+    return u.el;
+  }
+
+  function updateRow(u) {
+    if (!u.el) return;
+    u.el.dataset.tone = u.tone || '';
+    u.el.dataset.state = u.state;
+    u.el.querySelector('small').textContent = u.message;
+    u.el.querySelector('.fill').style.transform = `scaleX(${u.file.size ? u.received / u.file.size : 0})`;
+  }
+
+  let summaryFrame = 0;
+  function renderSummary() {
+    if (summaryFrame) return;
+    summaryFrame = requestAnimationFrame(() => {
+      summaryFrame = 0;
+      if (!uploadSummary) return;
+      const count = (what) => uploads.filter((u) => u.result === what).length;
+      const done = uploads.filter((u) => u.state === 'done').length;
+      if (!uploads.length) return uploadSummary.replaceChildren();
+      const busy = uploads.some((u) => u.state !== 'done');
+      const total = uploads.reduce((n, u) => n + u.file.size, 0);
+      const sent = uploads.reduce((n, u) => n + (u.state === 'done' ? u.file.size : u.received), 0);
+      const facts = [
+        count('added') && `${count('added')} added`,
+        count('duplicate') && `${count('duplicate')} already in the library`,
+        count('failed') && `${count('failed')} failed`,
+      ].filter(Boolean).join(' · ');
+      const actions = h('div', { class: 'upload-actions' },
+        count('failed') && !busy ? h('button', { class: 'request-btn', type: 'button', text: 'Try the failed ones again', onclick: retryFailed }) : null,
+        !busy ? h('button', { class: 'link-btn', type: 'button', text: 'Clear the list', onclick: clearUploads }) : null);
+      uploadSummary.replaceChildren(...[
+        h('p', {}, h('strong', { text: busy ? `Uploading: ${done} of ${uploads.length} done` : `${plural(uploads.length, 'file', 'files')} done` }),
+          facts ? h('span', { text: ` · ${facts}` }) : null),
+        busy ? h('div', { class: 'bar' }, h('div', { class: 'fill', style: `transform: scaleX(${total ? sent / total : 0})` })) : null,
+        busy ? h('small', { text: 'Keep this page open until it’s finished.' }) : actions,
+      ].filter(Boolean));
+    });
   }
 
   function addFiles(files) {
-    for (const file of files) uploads.unshift({ file, kind: uploadKind, state: 'waiting', received: 0, message: 'Waiting…' });
-    uploads.splice(20);
+    const max = (status ? status.max_upload_mb : 500) * 1024 * 1024;
+    let skipped = 0;
+    for (const file of files) {
+      if (!AUDIO_FILE.test(file.name)) {
+        skipped += 1;
+        continue;
+      }
+      const u = { file, kind: uploadKind, state: 'waiting', received: 0, message: 'Waiting…' };
+      if (file.size > max) finish(u, 'error', `Too big: files can be up to ${max / 1048576} MB.`, 'failed');
+      uploads.push(u);
+    }
+    if (skipped) app.toast(`Skipped ${plural(skipped, 'file', 'files')} that ${skipped === 1 ? 'isn’t' : 'aren’t'} music.`);
     renderUpload();
     pump();
   }
 
-  let pumping = false;
-  async function pump() {
-    if (pumping) return;
-    pumping = true;
-    try {
-      for (;;) {
-        const u = [...uploads].reverse().find((x) => x.state === 'waiting');
-        if (!u) break;
-        await send(u);
-        renderUpload();
-      }
-    } finally {
-      pumping = false;
+  function retryFailed() {
+    for (const u of uploads) {
+      if (u.result !== 'failed' || u.message.startsWith('Too big')) continue;
+      Object.assign(u, { state: 'waiting', received: 0, tone: '', result: undefined, message: 'Waiting…' });
+      updateRow(u);
     }
-    loadStatus();
+    renderSummary();
+    pump();
   }
+
+  function clearUploads() {
+    uploads.length = 0;
+    if (uploadList) uploadList.replaceChildren();
+    renderSummary();
+  }
+
+  // Three at a time; the screen stays on until they're done
+  function pump() {
+    while (token && active < PARALLEL) {
+      const u = uploads.find((x) => x.state === 'waiting');
+      if (!u) break;
+      active += 1;
+      u.state = 'sending';
+      send(u)
+        .catch(() => finish(u, 'error', 'The upload didn’t work.', 'failed'))
+        .finally(() => {
+          active -= 1;
+          updateRow(u);
+          renderSummary();
+          pump();
+          if (!active) {
+            releaseWakeLock();
+            loadStatus();
+          }
+        });
+    }
+    if (active) holdWakeLock();
+  }
+
+  async function holdWakeLock() {
+    if (wakeLock || !navigator.wakeLock || document.hidden) return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch { /* not allowed right now */ }
+  }
+
+  function releaseWakeLock() {
+    if (wakeLock) wakeLock.release().catch(() => {});
+    wakeLock = null;
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && active) holdWakeLock();
+  });
+  window.addEventListener('beforeunload', (event) => {
+    if (active || uploads.some((u) => u.state === 'waiting')) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
 
   const LYRICS = {
     synced: 'timed lyrics found',
@@ -444,12 +593,20 @@
   };
 
   async function send(u) {
-    u.state = 'sending';
     u.message = 'Uploading…';
+    updateRow(u);
     const id = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
     let failures = 0;
+    const retry = async (message) => {
+      failures += 1;
+      if (failures > 5) return false;
+      u.message = message;
+      updateRow(u);
+      await new Promise((r) => { setTimeout(r, 1500 * failures); });
+      return true;
+    };
     while (u.received < u.file.size) {
-      const piece = u.file.slice(u.received, Math.min(u.received + CHUNK, u.file.size));
+      const piece = u.file.slice(u.received, Math.min(u.received + chunkSize, u.file.size));
       let reply;
       try {
         reply = await api('upload', { method: 'POST', raw: piece, headers: {
@@ -460,11 +617,22 @@
           'X-Upload-Size': String(u.file.size),
         } });
       } catch (err) {
-        if (err.message === 'signed out') return;
-        failures += 1;
-        if (failures > 3) return finish(u, 'error', 'The connection kept dropping. Try again.');
-        await new Promise((r) => { setTimeout(r, 1500 * failures); });
+        if (err.message === 'signed out') {
+          // Starts again once signed back in
+          Object.assign(u, { state: 'waiting', received: 0, message: 'Waiting…' });
+          return;
+        }
+        if (await retry('The connection dropped. Trying again…')) continue;
+        return finish(u, 'error', 'The connection kept dropping. Try again.', 'failed');
+      }
+      // The proxy turned a big piece away: smaller pieces from now on
+      if (reply.status === 413 && reply.unparsed && chunkSize > SMALL_CHUNK) {
+        chunkSize = SMALL_CHUNK;
         continue;
+      }
+      if (reply.unparsed && reply.status >= 500) {
+        if (await retry('The server was busy. Trying again…')) continue;
+        return finish(u, 'error', reply.error, 'failed');
       }
       if (reply.status === 409 && typeof reply.received === 'number') {
         u.received = reply.received; // pick up where the server got to
@@ -472,29 +640,33 @@
       }
       if (!reply.ok) {
         const dup = reply.duplicate;
-        return finish(u, dup ? 'warn' : 'error', dup
-          ? `Already in the library as “${dup.title}”${dup.artist ? ` by ${dup.artist}` : ''}.`
-          : reply.error || 'The upload didn’t work.');
+        return dup
+          ? finish(u, 'warn', `Already in the library as “${dup.title}”${dup.artist ? ` by ${dup.artist}` : ''}.`, 'duplicate')
+          : finish(u, 'error', reply.error || 'The upload didn’t work.', 'failed');
       }
       if (typeof reply.received === 'number') {
         u.received = reply.received;
         u.message = `Uploading… ${Math.floor((u.received / u.file.size) * 100)}%`;
-        renderUpload();
+        updateRow(u);
+        renderSummary();
         continue;
       }
       u.received = u.file.size;
-      if (reply.kind === 'jingle') return finish(u, 'ok', `Added as a jingle (${Math.round(reply.duration)} s).`);
+      if (reply.kind === 'jingle') return finish(u, 'ok', `Added as a jingle (${Math.round(reply.duration)} s).`, 'added');
       const song = reply.song;
       const extra = (reply.warnings || []).join(' ');
       return finish(u, reply.lyrics === 'synced' ? 'ok' : 'warn',
-        `Added: “${song.title}”${song.artist ? ` by ${song.artist}` : ''}. ${LYRICS[reply.lyrics] ? `${LYRICS[reply.lyrics][0].toUpperCase()}${LYRICS[reply.lyrics].slice(1)}.` : ''} ${extra}`.trim());
+        `Added: “${song.title}”${song.artist ? ` by ${song.artist}` : ''}. ${LYRICS[reply.lyrics] ? `${LYRICS[reply.lyrics][0].toUpperCase()}${LYRICS[reply.lyrics].slice(1)}.` : ''} ${extra}`.trim(), 'added');
     }
   }
 
-  function finish(u, tone, message) {
+  function finish(u, tone, message, result) {
     u.state = 'done';
     u.tone = tone;
     u.message = message;
+    u.result = result;
+    updateRow(u);
+    renderSummary();
   }
 
   // ---- Stats ----

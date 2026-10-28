@@ -4,16 +4,11 @@ const STREAM_URL = 'https://icecast.tacogroup.uk/stream';
 // The same broadcast at half the size (64 kbps), for the data saver
 const STREAM_URL_LOW = 'https://icecast.tacogroup.uk/stream-low';
 const FEED_URL = 'https://icecast.tacogroup.uk/nowplaying/nowplaying.json';
-const LRCLIB_API = 'https://lrclib.net/api';
-// LRCLIB asks apps to say who they are
-const LRCLIB_CLIENT = 'Taco Music v1 (https://music.tacogroup.uk)';
+// Lyrics, with word-by-word (karaoke) timings for many songs
+const SYNCLRC_API = 'https://api.synclrc.dev';
 // Lyric timings only fit a recording of the same length (in seconds) as the one playing
 const SYNC_TOLERANCE = 3;
-// SyncLRC adds word-by-word (karaoke) timings to LRCLIB's lyrics for many songs
-const SYNCLRC_API = 'https://api.synclrc.dev';
-// How long to wait for SyncLRC's word timings before showing LRCLIB's lyrics (they switch over if
-// the word timings come later), and when to ask again if SyncLRC was still fetching them
-const KARAOKE_WAIT_MS = 2000;
+// When to ask again if SyncLRC was still fetching a song's word timings
 const KARAOKE_RETRY_MS = 15000;
 const LIBRARY_URL = 'https://icecast.tacogroup.uk/nowplaying/library.json';
 const REQUEST_API = 'https://icecast.tacogroup.uk/requests';
@@ -37,7 +32,7 @@ const BURST_SECONDS = 1;
 const STREAM_LATENCY = 0.15;
 // How long connecting to the stream takes before audio arrives, until the feed has been timed
 const CONNECT_SECONDS = 0.4;
-const FALLBACK_COVER = 'icons/icon-512.png';
+const FALLBACK_COVER = 'icons/icon-maskable-512.png'; // the logo, edge to edge, when a song has no cover
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -45,7 +40,8 @@ const els = {
   play: $('play'),
   coverA: $('cover-a'),
   coverB: $('cover-b'),
-  vinylCover: $('vinyl-cover'),
+  ambientA: $('ambient-a'),
+  ambientB: $('ambient-b'),
   meta: $('meta'),
   themeColor: $('theme-color'),
   title: $('title'),
@@ -104,9 +100,9 @@ const els = {
   sleepBtn: $('sleep-btn'),
   sleepLabel: $('sleep-label'),
   sleepMenu: $('sleep-menu'),
-  saverBtn: $('saver-btn'),
-  saverLabel: $('saver-label'),
-  saverMenu: $('saver-menu'),
+  moreBtn: $('more-btn'),
+  moreMenu: $('more-menu'),
+  saverChip: $('saver-chip'),
   djChip: $('dj-chip'),
   visualiser: $('visualiser'),
   toasts: $('toasts'),
@@ -376,7 +372,10 @@ try {
   if (saved >= 0 && saved <= 1) els.volume.value = saved;
 } catch { /* storage unavailable */ }
 audio.volume = parseFloat(els.volume.value);
+const showVolume = () => els.volume.style.setProperty('--vol', `${els.volume.value * 100}%`);
+showVolume();
 els.volume.addEventListener('input', () => {
+  showVolume();
   if (!sleepFade) audio.volume = parseFloat(els.volume.value);
   try { localStorage.setItem('taco-volume', els.volume.value); } catch { /* storage unavailable */ }
 });
@@ -452,12 +451,13 @@ function drawVisualiser() {
     let sum = 0;
     for (let b = from; b < to; b += 1) sum += data[b];
     const level = sum / (to - from) / 255;
-    const target = Math.max(0.04, level ** 1.6);
+    const target = level ** 1.6;
     // Rise quickly, fall gently
     const prev = vizHeights[i] || 0;
     const height = target > prev ? target : prev - Math.min(prev - target, 0.035);
     vizHeights[i] = height;
     const barH = height * h * 0.92;
+    if (barH < 2) continue; // nothing drawn while it's quiet
     const x = gap + i * (barW + gap);
     ctx.globalAlpha = 0.55 + height * 0.45;
     ctx.beginPath();
@@ -498,9 +498,14 @@ function setSleep(minutes) {
 }
 
 function renderSleep() {
-  const left = sleepAt - Date.now();
+  const left = formatTime(Math.max(0, sleepAt - Date.now()) / 1000);
   els.sleepBtn.classList.toggle('on', sleepAt > 0);
-  setText(els.sleepLabel, sleepAt ? `Sleep in ${formatTime(Math.max(0, left) / 1000)}` : 'Sleep timer');
+  setText(els.sleepLabel, sleepAt ? left : '');
+  const label = sleepAt ? `Sleep timer: stops in ${left}` : 'Sleep timer';
+  if (els.sleepBtn.getAttribute('aria-label') !== label) {
+    els.sleepBtn.setAttribute('aria-label', label);
+    els.sleepBtn.title = label;
+  }
   for (const item of els.sleepMenu.querySelectorAll('button')) {
     item.setAttribute('aria-checked', String(item.dataset.minutes === '0' ? !sleepAt : false));
   }
@@ -528,11 +533,8 @@ function checkSleep() {
 // ---- Data saver ----
 
 function renderSaver() {
-  const words = { auto: 'Auto', on: 'On', off: 'Off' };
-  els.saverBtn.classList.toggle('on', useLowStream());
-  setText(els.saverLabel, `Data saver: ${words[saverSetting]}`);
-  els.saverBtn.title = useLowStream() ? 'Playing the data saver stream' : 'Playing in full quality';
-  for (const item of els.saverMenu.querySelectorAll('button')) {
+  els.saverChip.hidden = !useLowStream();
+  for (const item of els.moreMenu.querySelectorAll('[data-saver]')) {
     item.setAttribute('aria-checked', String(item.dataset.saver === saverSetting));
   }
 }
@@ -554,11 +556,11 @@ if (navigator.connection && navigator.connection.addEventListener) {
   navigator.connection.addEventListener('change', saverChanged);
 }
 
-// ---- Menus (sleep timer, data saver) ----
+// ---- Menus (sleep timer, and "more": data saver, installing, station admin) ----
 
 const menus = [
   { button: els.sleepBtn, menu: els.sleepMenu, pick: (item) => setSleep(Number(item.dataset.minutes)) },
-  { button: els.saverBtn, menu: els.saverMenu, pick: (item) => setSaver(item.dataset.saver) },
+  { button: els.moreBtn, menu: els.moreMenu, pick: (item) => { if (item.dataset.saver) setSaver(item.dataset.saver); } },
 ];
 
 function closeMenus(except) {
@@ -576,7 +578,7 @@ for (const m of menus) {
     const open = m.menu.hidden;
     m.menu.hidden = !open;
     m.button.setAttribute('aria-expanded', String(open));
-    if (open) (m.menu.querySelector('[aria-checked="true"]') || m.menu.querySelector('button')).focus();
+    if (open) (m.menu.querySelector('[aria-checked="true"]') || m.menu.querySelector('button:not([hidden])')).focus();
   });
   m.menu.addEventListener('click', (event) => {
     const item = event.target.closest('button');
@@ -587,7 +589,7 @@ for (const m of menus) {
     m.button.focus();
   });
   m.menu.addEventListener('keydown', (event) => {
-    const items = [...m.menu.querySelectorAll('button')];
+    const items = [...m.menu.querySelectorAll('button:not([hidden])')];
     const i = items.indexOf(document.activeElement);
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
@@ -646,9 +648,11 @@ function currentTrack() {
 
 // ---- Cover art and colours ----
 
-const BRAND_THEME = { tint1: 'hsl(20 50% 13%)', tint2: 'hsl(16 72% 31%)', accent: 'hsl(24 100% 62%)', ink: '#1A0F09' };
+// Taco Music's own colours (aqua and iris), when there's no cover to take them from
+const BRAND_THEME = { tint1: 'hsl(232 45% 10%)', tint2: 'hsl(250 70% 32%)', accent: 'hsl(170 80% 62%)', ink: '#04140F' };
 let coverRequest = '';
 let frontCover = els.coverA;
+let frontAmbient = els.ambientA;
 
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
@@ -775,9 +779,13 @@ function setCover(url) {
       back.classList.add('is-front');
       frontCover.classList.remove('is-front');
       frontCover = back;
-      setCors(els.vinylCover, cors);
-      els.vinylCover.src = src;
-      applyTheme(themeFrom(cors ? coverColors(img) : null));
+      // The same cover, blurred, behind everything (not the station logo)
+      const ambient = frontAmbient === els.ambientA ? els.ambientB : els.ambientA;
+      if (src !== FALLBACK_COVER) ambient.src = src;
+      ambient.classList.toggle('is-front', src !== FALLBACK_COVER);
+      frontAmbient.classList.remove('is-front');
+      frontAmbient = ambient;
+      applyTheme(themeFrom(cors && src !== FALLBACK_COVER ? coverColors(img) : null));
     })
     .catch(() => {
       if (coverRequest === src && src !== FALLBACK_COVER) {
@@ -1210,7 +1218,6 @@ els.songSearch.addEventListener('input', filterSongs);
 
 // ---- Lyrics ----
 
-const lyricsCache = new Map();
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 let lyricsLines = [];
 let activeLine = -1;
@@ -1220,22 +1227,7 @@ let userScrolledUntil = 0;
 
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-// One LRCLIB request. Returns null when nothing matched; waits and retries when it's busy.
-async function lrclib(endpoint, params) {
-  for (let attempt = 1; ; attempt += 1) {
-    const res = await fetch(`${LRCLIB_API}/${endpoint}?${params}`, { headers: { 'Lrclib-Client': LRCLIB_CLIENT } });
-    if (res.ok) return res.json();
-    if (res.status === 404) return null;
-    if ((res.status === 429 || res.status === 503) && attempt < 3) {
-      const wait = Math.min(parseFloat(res.headers.get('Retry-After')) || 1, 10);
-      await sleep(wait * 1000 * (1 + Math.random() * 0.3)); // jitter, as LRCLIB asks
-      continue;
-    }
-    throw new Error(`HTTP ${res.status}`);
-  }
-}
-
-// Drop "(Remastered)", "(feat. …)", "(From …)" and similar so the search can match
+// Drop "(Remastered)", "(feat. …)", "(From …)" and similar so the lookup can match
 function cleanTitle(title) {
   return title
     .replace(/\s*[([][^)\]]*(remaster|remix|live|version|edit|mono|stereo|from |feat\.?|ft\.|with )[^)\]]*[)\]]/gi, '')
@@ -1243,114 +1235,18 @@ function cleanTitle(title) {
     .trim();
 }
 
-async function searchLyrics(artist, title) {
-  const params = new URLSearchParams({ track_name: title });
-  if (artist) params.set('artist_name', artist);
-  const results = await lrclib('search', params);
-  return Array.isArray(results) ? results : [];
-}
-
-const msToSeconds = (ms) => (Number.isInteger(ms) && ms >= 0 ? ms / 1000 : null);
-
-// Lyricsfile (https://lrclib.net/lyricsfile): YAML with line timings and, for some songs,
-// timings for each word. Returns null if it's missing or not something we can read.
-function parseLyricsfile(text) {
-  if (!text || !window.jsyaml) return null;
-  let doc;
-  try {
-    doc = window.jsyaml.load(text, { schema: window.jsyaml.CORE_SCHEMA });
-  } catch {
-    return null;
-  }
-  if (!doc || typeof doc !== 'object' || doc.version !== '1.0') return null;
-  const meta = doc.metadata && typeof doc.metadata === 'object' ? doc.metadata : {};
-  const timed = (item) => item && typeof item.text === 'string' && msToSeconds(item.start_ms) !== null;
-  const span = (item) => {
-    const start = msToSeconds(item.start_ms);
-    const end = msToSeconds(item.end_ms);
-    return { text: item.text, start, end: end !== null && end >= start ? end : null };
-  };
-  const lines = (Array.isArray(doc.lines) ? doc.lines : []).filter(timed).map((line) => ({
-    ...span(line),
-    words: (Array.isArray(line.words) ? line.words : []).filter(timed).map(span)
-      .sort((a, b) => a.start - b.start),
-  }));
-  return {
-    instrumental: meta.instrumental === true,
-    lines: lines.sort((a, b) => a.start - b.start),
-    plain: typeof doc.plain === 'string' && doc.plain.trim() ? doc.plain : null,
-  };
-}
-
+// Line-timed lyrics: [00:12.30]Hello world. {bg} marks a background vocals line, {agent:...} who sings.
 function parseLrc(lrc) {
   const lines = [];
   for (const raw of lrc.split(/\r?\n/)) {
     const stamps = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
-    const text = raw.replace(/\[[^\]]*\]/g, '').trim();
+    const background = raw.includes('{bg}');
+    const text = raw.replace(/\[[^\]]*\]/g, '').replace(/\{[^}]*\}/g, '').trim();
     for (const m of stamps) {
-      lines.push({ text, start: parseInt(m[1], 10) * 60 + parseFloat(m[2]), end: null, words: [] });
+      lines.push({ text, start: parseInt(m[1], 10) * 60 + parseFloat(m[2]), end: null, words: [], background });
     }
   }
   return lines.sort((a, b) => a.start - b.start);
-}
-
-// Everything we need from an LRCLIB record, preferring its Lyricsfile over the older fields
-function readRecord(record) {
-  const file = parseLyricsfile(record.lyricsfile);
-  const lines = file && file.lines.length ? file.lines : parseLrc(record.syncedLyrics || '');
-  const plain = (file && file.plain) || record.plainLyrics || lines.map((line) => line.text).join('\n');
-  return {
-    duration: record.duration,
-    instrumental: !!record.instrumental || !!(file && file.instrumental),
-    lines,
-    plain: plain.trim() ? plain : null,
-  };
-}
-
-// How far a record's length is from the song that's actually playing
-const durationGap = (lyrics, duration) => (duration && lyrics.duration ? Math.abs(lyrics.duration - duration) : Infinity);
-
-function pickLyrics(records, duration) {
-  const usable = records.map(readRecord)
-    .filter((l) => l.lines.length || l.plain || l.instrumental)
-    .sort((a, b) => durationGap(a, duration) - durationGap(b, duration));
-  if (!duration) {
-    // Without the song's length there's nothing to check timings against
-    return usable.find((l) => l.lines.length) || usable[0] || null;
-  }
-  // Timings only fit a recording of the same length, so other versions only get the words
-  const sameLength = usable.filter((l) => durationGap(l, duration) <= SYNC_TOLERANCE);
-  const match = sameLength.find((l) => l.lines.length) || sameLength.find((l) => l.plain) || sameLength[0];
-  if (match) return match;
-  const other = usable.find((l) => l.plain);
-  return other ? { ...other, lines: [], otherVersion: true } : null;
-}
-
-async function lookupLyrics(track) {
-  const duration = track.duration ? Math.round(track.duration) : 0;
-  let exact = null;
-  // The exact match first: LRCLIB only returns lyrics for a recording within 2 s of this length
-  if (track.artist && duration >= 1 && duration <= 3600) {
-    const params = new URLSearchParams({ track_name: track.title, artist_name: track.artist, duration });
-    const record = await lrclib('get', params);
-    exact = record && pickLyrics([record], track.duration);
-    if (exact && (exact.lines.length || exact.instrumental)) return exact;
-  }
-  // Otherwise search, in case another copy of this recording has timings
-  let match = null;
-  try {
-    match = pickLyrics(await searchLyrics(track.artist, track.title), track.duration);
-    const cleaned = cleanTitle(track.title);
-    if ((!match || !match.lines.length) && cleaned && cleaned !== track.title) {
-      const retry = pickLyrics(await searchLyrics(track.artist, cleaned), track.duration);
-      if (retry && (!match || retry.lines.length)) match = retry;
-    }
-  } catch (err) {
-    if (!exact) throw err;
-  }
-  // Untimed lyrics for this exact recording still beat another version's
-  if (exact && (!match || !match.lines.length)) return exact;
-  return match;
 }
 
 // Word-by-word lyrics as SyncLRC writes them: [00:12.30]<00:12.30>Hello <00:12.80>world<00:13.40>
@@ -1385,67 +1281,139 @@ function parseKaraoke(text) {
   return lines.sort((a, b) => a.start - b.start);
 }
 
-// SyncLRC allows 30 requests a minute; the app asks once a song (and maybe once more). If it says
-// that's too many anyway, leave it alone for a minute.
-const SYNCLRC_PAUSE_MS = 60000;
-let synclrcPausedUntil = 0;
+// ---- Lyrics from SyncLRC ----
+// SyncLRC has word-by-word (karaoke) timings for many songs, and line timings or just the words for
+// others. It allows each listener 30 requests a minute, so the app keeps under SYNCLRC_LIMIT,
+// remembers what it found on this device, and asks about a song at most three times: the song,
+// its title without "(Remastered)" and the like if that found nothing, and once more a little later
+// if the word timings weren't ready yet (asking can set SyncLRC fetching them).
 
-// One SyncLRC request, or null. It can be unreachable from some networks (its host may check for
-// bots), slow or busy; any of that just means LRCLIB's lyrics are used.
-async function synclrc(track, fresh) {
-  if (Date.now() < synclrcPausedUntil) return null;
-  const params = new URLSearchParams({ track: track.title, artist: track.artist, duration: Math.round(track.duration), include: 'bg' });
+const SYNCLRC_LIMIT = 25; // requests a minute
+const SYNCLRC_PAUSE_MS = 60000; // after "too many requests"
+const LYRICS_STORE = 'taco-lyrics-v2';
+const LYRICS_KEEP_MS = 7 * 86400000; // lyrics found
+const MISS_KEEP_MS = 6 * 3600000; // songs SyncLRC had nothing for
+const LYRICS_STORE_SIZE = 80; // songs remembered
+let synclrcPausedUntil = 0;
+const synclrcSent = []; // when recent requests went out (ms)
+const lyricsMemory = new Map(); // in case this device can't store anything
+
+// Wait for room under the limit. Returns false if the song changed meanwhile.
+async function synclrcTurn(wanted) {
+  for (;;) {
+    if (!wanted()) return false;
+    const t = Date.now();
+    while (synclrcSent.length && t - synclrcSent[0] >= 60000) synclrcSent.shift();
+    const full = synclrcSent.length >= SYNCLRC_LIMIT ? synclrcSent[0] + 60000 - t : 0;
+    const wait = Math.max(synclrcPausedUntil - t, full);
+    if (wait <= 0) {
+      synclrcSent.push(t);
+      return true;
+    }
+    await sleep(Math.min(wait, 2000));
+  }
+}
+
+// One request: SyncLRC's answer, null if it has nothing for the song, or undefined if it couldn't
+// be asked (offline, busy, the song changed, or SyncLRC's host turned the request away)
+async function synclrc(params, wanted, fresh) {
+  if (!await synclrcTurn(wanted)) return undefined;
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), 10000);
   try {
     const res = await fetch(`${SYNCLRC_API}/lyrics?${params}`, { signal: abort.signal, cache: fresh ? 'no-store' : 'default' });
+    if (res.status === 404) return null;
     if (res.status === 429) synclrcPausedUntil = Date.now() + SYNCLRC_PAUSE_MS;
-    return res.ok ? await res.json() : null;
+    if (res.status === 503 || res.status === 504) synclrcPausedUntil = Date.now() + 15000;
+    if (!res.ok) return undefined;
+    return await res.json();
   } catch {
-    return null;
+    return undefined;
   } finally {
     clearTimeout(timer);
   }
 }
 
-// SyncLRC's word timings, when they're for a recording the same length as the one playing
-function readKaraoke(data, songDuration) {
-  if (!data || data.type !== 'karaoke' || typeof data.lyrics !== 'string' || !data.duration) return null;
-  if (Math.abs(data.duration - songDuration) > SYNC_TOLERANCE) return null;
-  const lines = parseKaraoke(data.lyrics);
-  if (!lines.some((line) => line.words.length)) return null;
-  return { duration: data.duration, instrumental: false, lines, plain: null, source: 'synclrc' };
+const lyricsKey = (track) => `${track.artist}|${track.title}|${Math.round(track.duration || 0)}`.toLowerCase();
+const slim = (data) => data && { type: data.type, lyrics: data.lyrics, duration: data.duration, instrumental: !!data.instrumental };
+
+function lyricsStore() {
+  try {
+    return JSON.parse(localStorage.getItem(LYRICS_STORE) || '{}') || {};
+  } catch {
+    return {};
+  }
 }
 
-const karaokeCache = new Map();
-
-function fetchKaraoke(track) {
-  if (!track.artist || !track.duration) return Promise.resolve(null);
-  const key = `${track.artist}|${track.title}|${Math.round(track.duration)}`;
-  if (!karaokeCache.has(key)) {
-    karaokeCache.set(key, (async () => {
-      let data = await synclrc(track);
-      // The first request for a song can set SyncLRC fetching its word timings: ask again shortly
-      if (data && data.type !== 'karaoke' && !data.instrumental) {
-        await sleep(KARAOKE_RETRY_MS);
-        data = await synclrc(track, true);
-      }
-      return readKaraoke(data, track.duration);
-    })());
-    // Keep only what was found: next time the song plays, ask again
-    karaokeCache.get(key).then((found) => { if (!found) karaokeCache.delete(key); });
-  }
-  return karaokeCache.get(key);
+// What's remembered for a song: its lyrics, null for "SyncLRC had nothing", or undefined
+function recallLyrics(key) {
+  const entry = lyricsStore()[key] || lyricsMemory.get(key);
+  if (!entry) return undefined;
+  const age = Date.now() - entry.at;
+  return age < (entry.data ? LYRICS_KEEP_MS : MISS_KEEP_MS) ? entry.data : undefined;
 }
 
-function fetchLyrics(track) {
-  const key = `${track.artist}|${track.title}|${Math.round(track.duration || 0)}`;
-  if (!lyricsCache.has(key)) {
-    const lookup = lookupLyrics(track);
-    lyricsCache.set(key, lookup);
-    lookup.catch(() => lyricsCache.delete(key)); // let a failed lookup try again next time
+function rememberLyrics(key, data) {
+  const entry = { at: Date.now(), data: slim(data) };
+  lyricsMemory.set(key, entry);
+  try {
+    const store = lyricsStore();
+    store[key] = entry;
+    // Keep the most recent songs, within the device's storage
+    const keys = Object.keys(store).sort((a, b) => store[b].at - store[a].at);
+    for (const old of keys.slice(LYRICS_STORE_SIZE)) delete store[old];
+    localStorage.setItem(LYRICS_STORE, JSON.stringify(store));
+  } catch {
+    try { localStorage.removeItem(LYRICS_STORE); } catch { /* storage unavailable */ }
   }
-  return lyricsCache.get(key);
+}
+
+function lyricsParams(track, title) {
+  const params = new URLSearchParams({ track: title, include: 'bg' });
+  if (track.artist) params.set('artist', track.artist);
+  if (track.duration) params.set('duration', String(Math.round(track.duration)));
+  return params;
+}
+
+// SyncLRC's lyrics for a song: { data } (null when it has none), { failed } if it couldn't be asked
+async function findLyrics(track, wanted) {
+  const key = lyricsKey(track);
+  const known = recallLyrics(key);
+  if (known !== undefined) return { data: known, key };
+  let data = await synclrc(lyricsParams(track, track.title), wanted);
+  const cleaned = cleanTitle(track.title);
+  if (data === null && cleaned && cleaned !== track.title) data = await synclrc(lyricsParams(track, cleaned), wanted);
+  if (data === undefined) return { failed: true };
+  rememberLyrics(key, data);
+  return { data, key, fresh: true };
+}
+
+// What to show from SyncLRC's answer. Timings only fit a recording of about the same length as the
+// one playing (within SYNC_TOLERANCE seconds); for another version, just the words.
+function readLyrics(data, songDuration) {
+  if (!data) return null;
+  const text = typeof data.lyrics === 'string' ? data.lyrics : '';
+  if (!text.trim()) return data.instrumental ? { instrumental: true, lines: [], plain: null, source: 'synclrc' } : null;
+  const timed = data.type === 'karaoke' ? parseKaraoke(text) : data.type === 'synced' ? parseLrc(text) : [];
+  const fits = !songDuration || !data.duration || Math.abs(data.duration - songDuration) <= SYNC_TOLERANCE;
+  if (timed.some((line) => line.text) && fits) return { lines: timed, plain: null, source: 'synclrc', words: data.type === 'karaoke' };
+  const plain = timed.length ? timed.map((line) => line.text).join('\n') : text;
+  if (!plain.trim()) return null;
+  return { lines: [], plain, source: 'synclrc', otherVersion: timed.length > 0 && !fits };
+}
+
+// For the admin page: what SyncLRC has for an uploaded song (asked within the same limit as the
+// lyrics on screen): 'words', 'synced', 'other' (timed, for another length of recording), 'plain',
+// 'instrumental', 'none', or 'unknown' if it couldn't be asked
+async function lyricsCheck(song, wanted) {
+  const found = await findLyrics(song, wanted);
+  if (found.failed) return 'unknown';
+  const shown = readLyrics(found.data, song.duration);
+  if (!shown) return 'none';
+  if (shown.instrumental) return 'instrumental';
+  if (shown.words) return 'words';
+  if (shown.lines.length) return 'synced';
+  return shown.otherVersion ? 'other' : 'plain';
 }
 
 // kind: 'idle', 'loading', 'none', 'instrumental' or 'error' when there's nothing else to show,
@@ -1478,6 +1446,10 @@ function addText(el, text) {
 
 // Breaks with no singing at least this long (seconds) show the waiting dots
 const GAP_SECONDS = 5;
+// A word held at least this long (seconds) glows as it's sung, its letters lifting one by one
+const LONG_WORD = 1;
+// How long a held word's glow lingers after it (seconds)
+const GLOW_FADE = 0.8;
 // A line still showing this long after it started is over: the rest is an instrumental part
 const LONGEST_LINE = 12;
 
@@ -1501,17 +1473,37 @@ function sungLine(line, end) {
   const words = line.words.map((word, j) => {
     const span = document.createElement('span');
     span.className = 'word';
-    span.textContent = word.text;
     // Words in brackets are backing vocals
     if (word.text.includes('(')) inBrackets = true;
     if (inBrackets) span.classList.add('bv');
     if (word.text.includes(')') && !line.background) inBrackets = false;
     const after = line.words[j + 1];
-    return { start: word.start, end: word.end ?? (after ? after.start : end), el: span, fill: -1 };
+    const wordEnd = word.end ?? (after ? after.start : end);
+    // A held word gets its letters one by one, so they can light up and lift in turn. The spaces
+    // around it stay outside, where the line can wrap.
+    const [, lead, core, trail] = word.text.match(/^(\s*)([\s\S]*?)(\s*)$/);
+    const long = !reduceMotion && wordEnd - word.start >= LONG_WORD && [...core].length > 1;
+    let letters = null;
+    if (long) {
+      span.classList.add('long');
+      letters = [...core].map((ch) => {
+        if (/\s/.test(ch)) return { space: document.createTextNode(ch) };
+        const letter = document.createElement('span');
+        letter.className = 'ch';
+        letter.textContent = ch;
+        return { el: letter, f: -1 };
+      });
+      span.append(...letters.map((x) => x.el || x.space));
+      letters = letters.filter((x) => x.el);
+    } else {
+      span.textContent = core;
+    }
+    const nodes = [lead && document.createTextNode(lead), span, trail && document.createTextNode(trail)].filter(Boolean);
+    return { start: word.start, end: wordEnd, el: span, nodes, fill: -1, letters, glow: -1 };
   });
   if (words.length) {
     el.classList.add('has-words');
-    el.append(...words.map((word) => word.el));
+    el.append(...words.flatMap((word) => word.nodes));
   } else {
     addText(el, line.text);
   }
@@ -1579,10 +1571,9 @@ function setNowLine(text) {
   els.nowLineText.classList.add('swap');
 }
 
-function setCredit(source) {
-  const lrclib = '<a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a>';
+function setCredit(words) {
   const synclrc = '<a href="https://synclrc.dev" target="_blank" rel="noopener">SyncLRC</a>';
-  els.credit.innerHTML = source === 'synclrc' ? `Word-by-word lyrics from ${synclrc} and ${lrclib}` : `Lyrics from ${lrclib}`;
+  els.credit.innerHTML = words ? `Word-by-word lyrics from ${synclrc}` : `Lyrics from ${synclrc}`;
 }
 
 function renderLyrics(result, track) {
@@ -1596,7 +1587,7 @@ function renderLyrics(result, track) {
   els.lyrics.replaceChildren();
   els.lyrics.dataset.synced = 'false';
   setNowLine('');
-  setCredit(result && result.source);
+  setCredit(result && result.words);
   if (!result) return setLyricsStatus('No lyrics found for this song.', 'none');
   if (result.instrumental && !result.lines.length && !result.plain) {
     return setLyricsStatus('Instrumental. Enjoy the music.', 'instrumental');
@@ -1640,24 +1631,20 @@ async function showLyrics(track) {
     return;
   }
   setLyricsStatus('Finding lyrics…', 'loading');
-  // Both at once: SyncLRC's word-by-word timings, and LRCLIB's lyrics
-  const karaoke = fetchKaraoke(track);
-  const lyrics = fetchLyrics(track).then((result) => ({ result }), () => ({ failed: true }));
-  // Give the word timings a moment, so the lyrics don't change soon after they appear
-  const early = await Promise.race([karaoke, sleep(KARAOKE_WAIT_MS)]);
-  if (token !== lyricsToken) return; // the song changed while we were waiting
-  if (early) return renderLyrics(early, track);
+  const wanted = () => token === lyricsToken; // until the song changes
+  const found = await findLyrics(track, wanted);
+  if (!wanted()) return;
+  if (found.failed) return setLyricsStatus('Couldn’t load lyrics right now.', 'error');
+  renderLyrics(readLyrics(found.data, track.duration), track);
 
-  const { result, failed } = await lyrics;
-  if (token !== lyricsToken) return;
-  if (failed) setLyricsStatus('Couldn’t load lyrics right now.', 'error');
-  else renderLyrics(result, track);
-
-  // Word timings that turn up later take over
-  if (early === undefined) {
-    const late = await karaoke;
-    if (late && token === lyricsToken) renderLyrics(late, track);
-  }
+  // Asking can set SyncLRC fetching a song's word timings: ask once more a little later
+  const data = found.data;
+  if (!found.fresh || !data || data.type === 'karaoke' || data.instrumental || track.live_dj) return;
+  await sleep(KARAOKE_RETRY_MS);
+  const again = await synclrc(lyricsParams(track, track.title), wanted, true);
+  if (!wanted() || !again || again.type !== 'karaoke') return;
+  rememberLyrics(found.key, again);
+  renderLyrics(readLyrics(again, track.duration), track);
 }
 
 // Lyrics are on screen: the tab is open, or the full-screen view
@@ -1672,9 +1659,36 @@ function scrollToLine(el, instant) {
   });
 }
 
+// A held word: its glow builds while it's sung and lingers a moment after; each letter lights up
+// and lifts in its turn, settling as the glow fades
+function syncLongWord(word, t) {
+  const p = Math.min(Math.max((t - word.start) / (word.end - word.start), 0), 1);
+  let glow = 0;
+  if (t >= word.end) glow = Math.max(0, 1 - (t - word.end) / GLOW_FADE);
+  else if (t > word.start) glow = Math.min(1, p * 1.4);
+  glow = Math.round(glow * 40) / 40;
+  if (glow !== word.glow) {
+    word.glow = glow;
+    word.el.style.setProperty('--g', glow);
+  }
+  const n = word.letters.length;
+  word.letters.forEach((letter, i) => {
+    const f = Math.round(Math.min(Math.max(p * n - i, 0), 1) * 20) / 20;
+    if (f === letter.f) return;
+    letter.f = f;
+    letter.el.style.setProperty('--f', f);
+  });
+  word.el.classList.toggle('sung', t >= word.end);
+  word.el.classList.toggle('singing', t > word.start && t < word.end);
+}
+
 // Light up each word as it's sung: sung words are solid, the current one fills from the left
 function syncWords(line, t) {
   for (const word of line.words) {
+    if (word.letters) {
+      syncLongWord(word, t);
+      continue;
+    }
     let fill = t >= word.end ? 1 : t <= word.start ? 0 : (t - word.start) / (word.end - word.start);
     if (reduceMotion) fill = t >= word.start ? 1 : 0;
     fill = Math.round(fill * 100) / 100;
@@ -1895,7 +1909,7 @@ function openAdmin() {
     });
   }
   adminLoading.then(() => window.TacoAdmin.open({
-    api: REQUEST_API, libraryUrl: LIBRARY_URL, formatTime, makeThumb, makeText, toast,
+    api: REQUEST_API, libraryUrl: LIBRARY_URL, formatTime, makeThumb, makeText, toast, lyricsCheck,
     library: () => loadLibrary().then(() => library || []),
     nowPlaying: () => feed && feed.now_playing,
   })).catch(() => toast('Couldn’t open the admin page. Check your connection.'));

@@ -9,21 +9,22 @@ An installable web player (PWA) for the Taco Music live stream.
   the song title on phones, or the expand button on the tab), with the cover blurred behind them.
   The line being sung sits a third of the way down and the others fade with distance; backing
   vocals in brackets are set smaller; instrumental breaks and intros of 5 s or more show three dots
-  that fill in until singing resumes. Word-by-word (karaoke) timings come from
-  [SyncLRC](https://synclrc.dev) (`SYNCLRC_API`) where it has them for a recording within
-  `SYNC_TOLERANCE` seconds of the playing file, with background vocals as their own smaller lines.
-  It's asked at the same time as LRCLIB; if its answer takes more than `KARAOKE_WAIT_MS`, LRCLIB's
-  lyrics show first and switch over when it arrives, and if it's still fetching a song's word
-  timings it's asked again after `KARAOKE_RETRY_MS`. SyncLRC allows 30 requests a minute (the app
-  makes about one a song); if it answers "too many requests", the app leaves it alone for
-  `SYNCLRC_PAUSE_MS`. If SyncLRC can't be reached, LRCLIB is used as
-  below. Lyrics are looked up per song from [LRCLIB](https://lrclib.net) (free, no API key), reading
-  each record's [Lyricsfile](https://lrclib.net/lyricsfile) where it has one, with LRC and plain
-  text as fallbacks. Songs with word timings light up word by word; others highlight line by line.
-  Timed lyrics are only used when LRCLIB's recording is within `SYNC_TOLERANCE` seconds of the
-  length the feed gives for the playing file. If only other versions have timings, the words show
-  without following along. Requests identify the app with `LRCLIB_CLIENT` and wait out
-  LRCLIB's `Retry-After` when it's busy.
+  that fill in until singing resumes. Lyrics come from [SyncLRC](https://synclrc.dev)
+  (`SYNCLRC_API`): word-by-word (karaoke) timings where it has them, with background vocals as their
+  own smaller lines, otherwise line-by-line timings or just the words. Timings are only used for a
+  recording within `SYNC_TOLERANCE` seconds of the length the feed gives for the playing file; for
+  another version, the words show without following along.
+- **Held words glow:** as on Apple Music, a word sung for a second or more (`LONG_WORD`) lights up
+  letter by letter, each letter lifting a little, with a soft glow in the cover's colour that builds
+  while it's held and fades over `GLOW_FADE` seconds after. Not for listeners who ask for reduced
+  motion.
+- **Staying within SyncLRC's limit:** SyncLRC allows each listener 30 requests a minute, so the app
+  keeps under `SYNCLRC_LIMIT` (25), queueing anything over it until there's room. Each song is asked
+  about at most three times: by its title, once more without notes like "(Remastered 2011)" if that
+  found nothing, and once more after `KARAOKE_RETRY_MS` if the word timings weren't ready (asking
+  can set SyncLRC fetching them). What it finds is remembered on the device for a week (songs it
+  has nothing for, for 6 hours), so a song that comes round again isn't asked about. If SyncLRC
+  answers "too many requests", the app leaves it alone for `SYNCLRC_PAUSE_MS`.
 
 - **Song requests:** the Request tab searches `https://icecast.tacogroup.uk/nowplaying/library.json`
   and sends requests to `https://icecast.tacogroup.uk/requests`, which queues them in the AutoDJ.
@@ -31,7 +32,7 @@ An installable web player (PWA) for the Taco Music live stream.
   (a wait between requests per listener, no duplicates, nothing played in the last 30 minutes,
   and a maximum queue length).
 
-- **Likes:** the heart beside the play button likes the playing song (`/requests/like`). Each
+- **Likes:** the heart beside the song title likes the playing song (`/requests/like`). Each
   device sends an anonymous random id so its like counts once; counts arrive live with the
   timing updates. The **Top** tab shows the most liked, played and requested songs
   (`/requests/charts`).
@@ -48,11 +49,18 @@ An installable web player (PWA) for the Taco Music live stream.
   playback), and not for listeners who ask for reduced motion.
 - **Live DJs and jingles:** a live DJ shows with a badge and no progress bar, and their songs' lyrics
   as words only (a DJ's song can start anywhere); a station ident shows as the station.
-- **Station admin** (`admin.js`, loaded only when opened from the footer or at `#admin`): sign in
+- **Station admin** (`admin.js`, loaded only when opened from the ⋯ menu or at `#admin`): sign in
   with the admin password set on the server, then skip the song or end a DJ's set, reorder,
-  remove or add requests, see who's listening, upload songs and jingles (sent in pieces under
-  1 MB; the server turns away duplicates and checks LRCLIB for lyrics), and see stats: totals, the
-  most listeners at once each hour for the last week, daily peaks and top songs.
+  remove or add requests, see who's listening, upload songs and jingles, and see stats: totals, the
+  most listeners at once each hour for the last week, daily peaks and top songs. Uploads take any
+  number of files (or a whole folder), three at a time, in pieces of 4 MB (under 1 MB if a proxy
+  turns big pieces away); the server turns away duplicates. Each added song is then checked on
+  SyncLRC from the admin's browser, within the same limit as the lyrics, so a big batch is checked
+  over a few minutes; each row says what was found, and the summary counts songs without timed lyrics.
+- **Look:** a dark, glassy layout, two columns on wide screens. The colours come from the playing
+  song's cover (an accent and two tints, with the cover blurred behind everything); with no cover,
+  the station's own aqua and iris (`BRAND_THEME`). The data saver and the admin page sit in the ⋯
+  menu at the top.
 
 These are set at the top of `app.js`.
 
@@ -88,9 +96,8 @@ when the app isn't playing.
 | `admin.js` | The station admin page, loaded when it's opened |
 | `manifest.webmanifest` | App name, colours and icons for installing |
 | `sw.js` | Service worker: always loads the latest app, and keeps a copy so it opens offline |
-| `vendor/js-yaml.min.js` | [js-yaml](https://github.com/nodeca/js-yaml) 4.1.0, reads Lyricsfile YAML (MIT License, see `vendor/js-yaml.LICENSE.txt`) |
 | `fonts/` | Bricolage Grotesque, the display font, bundled so it works offline (SIL Open Font License, see `fonts/OFL.txt`) |
-| `icons/` | `logo.svg` is the Taco logo; `icon.svg` and `icon-maskable.svg` put it on the orange background, and the PNGs are rendered from those |
+| `icons/` | `logo.svg` is the Taco logo; `icon.svg` and `icon-maskable.svg` put it on the aqua-to-iris gradient, and the PNGs are rendered from those |
 
 ## Hosting
 

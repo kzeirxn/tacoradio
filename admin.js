@@ -488,19 +488,26 @@
       const busy = uploads.some((u) => u.state !== 'done');
       const total = uploads.reduce((n, u) => n + u.file.size, 0);
       const sent = uploads.reduce((n, u) => n + (u.state === 'done' ? u.file.size : u.received), 0);
+      const checking = uploads.filter((u) => u.lyrics === 'checking').length;
+      const untimed = uploads.filter((u) => ['other', 'plain', 'none'].includes(u.lyrics)).length;
       const facts = [
         count('added') && `${count('added')} added`,
+        untimed && `${untimed} without timed lyrics`,
         count('duplicate') && `${count('duplicate')} already in the library`,
         count('failed') && `${count('failed')} failed`,
       ].filter(Boolean).join(' · ');
       const actions = h('div', { class: 'upload-actions' },
         count('failed') && !busy ? h('button', { class: 'request-btn', type: 'button', text: 'Try the failed ones again', onclick: retryFailed }) : null,
-        !busy ? h('button', { class: 'link-btn', type: 'button', text: 'Clear the list', onclick: clearUploads }) : null);
+        !busy ? h('button', { class: 'link-btn', type: 'button', text: checking ? 'Clear the list (stops the lyrics checks)' : 'Clear the list', onclick: clearUploads }) : null);
+      const heading = busy ? `Uploading: ${done} of ${uploads.length} done`
+        : checking ? `${plural(uploads.length, 'file', 'files')} uploaded · checking lyrics for ${checking} more`
+          : `${plural(uploads.length, 'file', 'files')} done`;
       uploadSummary.replaceChildren(...[
-        h('p', {}, h('strong', { text: busy ? `Uploading: ${done} of ${uploads.length} done` : `${plural(uploads.length, 'file', 'files')} done` }),
-          facts ? h('span', { text: ` · ${facts}` }) : null),
+        h('p', {}, h('strong', { text: heading }), facts ? h('span', { text: ` · ${facts}` }) : null),
         busy ? h('div', { class: 'bar' }, h('div', { class: 'fill', style: `transform: scaleX(${total ? sent / total : 0})` })) : null,
-        busy ? h('small', { text: 'Keep this page open until it’s finished.' }) : actions,
+        busy ? h('small', { text: 'Keep this page open until it’s finished.' }) : null,
+        !busy && checking ? h('small', { text: 'SyncLRC answers about 25 songs a minute, so a big batch takes a few minutes. The songs are already in the library.' }) : null,
+        busy ? null : actions,
       ].filter(Boolean));
     });
   }
@@ -585,12 +592,31 @@
   });
 
   const LYRICS = {
-    synced: 'timed lyrics found',
-    plain: 'only untimed lyrics found',
-    instrumental: 'it’s instrumental',
-    none: 'no lyrics found',
-    unknown: 'lyrics couldn’t be checked',
+    words: ['ok', 'Word-by-word lyrics found.'],
+    synced: ['ok', 'Timed lyrics found.'],
+    other: ['warn', 'Timed lyrics are only for a different length of recording, so just the words will show.'],
+    plain: ['warn', 'Only untimed lyrics found.'],
+    instrumental: ['ok', 'It’s instrumental.'],
+    none: ['warn', 'No lyrics found on SyncLRC.'],
+    unknown: ['warn', 'Lyrics couldn’t be checked.'],
   };
+
+  // Ask SyncLRC about an added song. These go out within its limit (shared with the lyrics on
+  // screen), so a big batch is checked over a few minutes; clearing the list stops the rest.
+  async function checkLyrics(u, song, added) {
+    u.lyrics = 'checking';
+    u.message = `${added} Checking lyrics…`;
+    updateRow(u);
+    renderSummary();
+    const result = await app.lyricsCheck(song, () => uploads.includes(u));
+    if (!uploads.includes(u)) return;
+    const [tone, said] = LYRICS[result] || LYRICS.unknown;
+    u.lyrics = result;
+    u.tone = u.tone === 'warn' ? 'warn' : tone;
+    u.message = `${added} ${said}`;
+    updateRow(u);
+    renderSummary();
+  }
 
   async function send(u) {
     u.message = 'Uploading…';
@@ -654,9 +680,11 @@
       u.received = u.file.size;
       if (reply.kind === 'jingle') return finish(u, 'ok', `Added as a jingle (${Math.round(reply.duration)} s).`, 'added');
       const song = reply.song;
-      const extra = (reply.warnings || []).join(' ');
-      return finish(u, reply.lyrics === 'synced' ? 'ok' : 'warn',
-        `Added: “${song.title}”${song.artist ? ` by ${song.artist}` : ''}. ${LYRICS[reply.lyrics] ? `${LYRICS[reply.lyrics][0].toUpperCase()}${LYRICS[reply.lyrics].slice(1)}.` : ''} ${extra}`.trim(), 'added');
+      const warnings = reply.warnings || [];
+      const added = [`Added: “${song.title}”${song.artist ? ` by ${song.artist}` : ''}.`, ...warnings].join(' ');
+      finish(u, warnings.length ? 'warn' : 'ok', added, 'added');
+      checkLyrics(u, song, added);
+      return;
     }
   }
 

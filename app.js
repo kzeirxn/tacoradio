@@ -1283,20 +1283,25 @@ function parseKaraoke(text) {
 
 // ---- Lyrics from SyncLRC ----
 // SyncLRC has word-by-word (karaoke) timings for many songs, and line timings or just the words for
-// others. It allows each listener 30 requests a minute, so the app keeps under SYNCLRC_LIMIT,
-// remembers what it found on this device, and asks about a song at most three times: the song,
-// its title without "(Remastered)" and the like if that found nothing, and once more a little later
-// if the word timings weren't ready yet (asking can set SyncLRC fetching them).
+// others. It keeps one version of each song's lyrics, timed for whichever recording it met first,
+// so the app also asks for every version it knows (with each one's length) and fits the lyrics to
+// the station's own file, as the lyrics did when they came from LRCLIB directly: line timings from
+// the version made for a recording this long, and word timings moved to match it if they're out.
+// SyncLRC allows each listener 30 requests a minute, so the app keeps under SYNCLRC_LIMIT,
+// remembers what it found on this device, and makes at most four requests a song: the song and
+// its versions, the title without "(Remastered)" and the like if the song found nothing, and once
+// more a little later if the word timings weren't ready yet (asking can set SyncLRC fetching them).
 
 const SYNCLRC_LIMIT = 25; // requests a minute
 const SYNCLRC_PAUSE_MS = 60000; // after "too many requests"
-const LYRICS_STORE = 'taco-lyrics-v2';
+const LYRICS_STORE = 'taco-lyrics-v3'; // v2 held lyrics not yet fitted to the station's files
 const LYRICS_KEEP_MS = 7 * 86400000; // lyrics found
 const MISS_KEEP_MS = 6 * 3600000; // songs SyncLRC had nothing for
 const LYRICS_STORE_SIZE = 80; // songs remembered
 let synclrcPausedUntil = 0;
 const synclrcSent = []; // when recent requests went out (ms)
 const lyricsMemory = new Map(); // in case this device can't store anything
+try { localStorage.removeItem('taco-lyrics-v2'); } catch { /* storage unavailable */ }
 
 // Wait for room under the limit. Returns false if the song changed meanwhile.
 async function synclrcTurn(wanted) {
@@ -1316,12 +1321,12 @@ async function synclrcTurn(wanted) {
 
 // One request: SyncLRC's answer, null if it has nothing for the song, or undefined if it couldn't
 // be asked (offline, busy, the song changed, or SyncLRC's host turned the request away)
-async function synclrc(params, wanted, fresh) {
+async function synclrc(params, wanted, fresh, path = 'lyrics') {
   if (!await synclrcTurn(wanted)) return undefined;
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), 10000);
   try {
-    const res = await fetch(`${SYNCLRC_API}/lyrics?${params}`, { signal: abort.signal, cache: fresh ? 'no-store' : 'default' });
+    const res = await fetch(`${SYNCLRC_API}/${path}?${params}`, { signal: abort.signal, cache: fresh ? 'no-store' : 'default' });
     if (res.status === 404) return null;
     if (res.status === 429) synclrcPausedUntil = Date.now() + SYNCLRC_PAUSE_MS;
     if (res.status === 503 || res.status === 504) synclrcPausedUntil = Date.now() + 15000;
@@ -1335,7 +1340,7 @@ async function synclrc(params, wanted, fresh) {
 }
 
 const lyricsKey = (track) => `${track.artist}|${track.title}|${Math.round(track.duration || 0)}`.toLowerCase();
-const slim = (data) => data && { type: data.type, lyrics: data.lyrics, duration: data.duration, instrumental: !!data.instrumental };
+const slim = (data) => data && { type: data.type, lyrics: data.lyrics, duration: data.duration, instrumental: !!data.instrumental, shift: data.shift || 0 };
 
 function lyricsStore() {
   try {
@@ -1375,26 +1380,148 @@ function lyricsParams(track, title) {
   return params;
 }
 
-// SyncLRC's lyrics for a song: { data } (null when it has none), { failed } if it couldn't be asked
+// ---- Fitting the lyrics to the station's recording ----
+
+// Word timings this far out (seconds) from the version made for a recording this long are moved
+// to match it; closer than that, they're left as they are (line timings are a little rougher)
+const SHIFT_MIN = 0.3;
+// Further out than this, the two are probably for different songs: leave the timings alone
+const SHIFT_MAX = 8;
+
+const median = (values) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
+
+// A line's words, for matching the same line across versions: no case, punctuation or backing vocals
+const lineKey = (text) => text.toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+// How many seconds later the same lines start in reference than in lines: matched in order, it
+// has to be the same for most lines (null if there aren't enough matches, or they don't agree)
+function lineOffset(lines, reference) {
+  const diffs = [];
+  let j = 0;
+  for (const line of lines) {
+    const key = lineKey(line.text);
+    if (!key || line.background) continue;
+    for (let k = j; k < Math.min(reference.length, j + 8); k += 1) {
+      if (lineKey(reference[k].text) === key) {
+        diffs.push(reference[k].start - line.start);
+        j = k + 1;
+        break;
+      }
+    }
+  }
+  if (diffs.length < 5) return null;
+  const mid = median(diffs);
+  return median(diffs.map((d) => Math.abs(d - mid))) <= 0.3 ? mid : null;
+}
+
+// The version made for a recording this long: the closest in length and, where several copies are
+// about that long, the timing most of them agree on, so one badly timed copy can't win
+function pickVersion(versions, duration) {
+  if (!duration || !versions) return null;
+  const near = versions
+    .filter((v) => Math.abs(v.duration - duration) <= SYNC_TOLERANCE)
+    .map((v) => ({ ...v, gap: Math.abs(v.duration - duration), lines: parseLrc(v.lyrics).filter((l) => l.text) }))
+    .filter((v) => v.lines.length >= 5)
+    .sort((a, b) => a.gap - b.gap);
+  if (!near.length) return null;
+  const group = near.filter((v) => v.gap <= near[0].gap + 1);
+  if (group.length < 3) return near[0];
+  const disagreement = (v) => median(group.filter((o) => o !== v).map((o) => {
+    const d = lineOffset(o.lines, v.lines);
+    return d === null ? SHIFT_MAX : Math.abs(d);
+  }));
+  return group.map((v) => ({ v, score: disagreement(v) })).sort((a, b) => a.score - b.score || a.v.gap - b.v.gap)[0].v;
+}
+
+// SyncLRC's answer, fitted to the station's recording: line timings from the version made for a
+// recording this long, and word timings moved to match that version if they're out
+function fitLyrics(data, versions, duration) {
+  if (!data || data.instrumental || typeof data.lyrics !== 'string') return data;
+  const reference = pickVersion(versions, duration);
+  if (!reference) return data;
+  if (data.type === 'karaoke') {
+    const shift = lineOffset(parseKaraoke(data.lyrics), reference.lines);
+    if (shift === null || Math.abs(shift) > SHIFT_MAX) return data;
+    return { ...data, duration: reference.duration, shift: Math.abs(shift) >= SHIFT_MIN ? Math.round(shift * 100) / 100 : 0 };
+  }
+  // The same words as SyncLRC's own (mostly), so it's this song and not another one this long
+  const ours = new Set((data.type === 'synced' ? parseLrc(data.lyrics).map((l) => l.text) : data.lyrics.split('\n')).map(lineKey).filter(Boolean));
+  const theirs = new Set(reference.lines.map((l) => lineKey(l.text)));
+  if (!ours.size || [...ours].filter((key) => theirs.has(key)).length < ours.size * 0.6) return data;
+  return { type: 'synced', lyrics: reference.lyrics, duration: reference.duration, instrumental: false };
+}
+
+const simpleText = (text) => (text || '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+// A title without any notes in brackets ("(Original 7" Mix)"), for finding and matching versions
+const baseTitle = (title) => cleanTitle(title).replace(/\s*[([][^)\]]*[)\]]/g, '').trim() || cleanTitle(title);
+
+// A search result for the same song (not another song by the artist, or a cover)
+function sameSong(result, track) {
+  const want = simpleText(baseTitle(track.title));
+  if (!want || simpleText(baseTitle(result.track || '')) !== want) return false;
+  const artist = simpleText((track.artist || '').split(/\s*(?:,|&|\bfeat\.?|\bft\.?|\bwith\b|\bx\b)\s*/i)[0]);
+  return !artist || simpleText(result.artist).includes(artist);
+}
+
+// Every version of the song SyncLRC knows that has line timings, with each one's length;
+// undefined if it couldn't be asked
+async function lyricsVersions(track, wanted) {
+  const q = `${track.artist || ''} ${baseTitle(track.title)}`.trim();
+  const found = await synclrc(new URLSearchParams({ q, limit: '20' }), wanted, false, 'search');
+  if (found === undefined) return undefined;
+  return ((found && found.results) || [])
+    .filter((r) => r && r.lyrics && typeof r.lyrics.synced === 'string' && Number(r.duration) > 0 && sameSong(r, track))
+    .map((r) => ({ lyrics: r.lyrics.synced, duration: Number(r.duration) }));
+}
+
+// SyncLRC's answer for a song, by its title or else the title without notes like "(Remastered)":
+// the lyrics, null for none, or undefined if it couldn't be asked
+async function askSynclrc(track, wanted) {
+  const data = await synclrc(lyricsParams(track, track.title), wanted);
+  const cleaned = cleanTitle(track.title);
+  if (data === null && cleaned && cleaned !== track.title) return synclrc(lyricsParams(track, cleaned), wanted);
+  return data;
+}
+
+// The lyrics for a song, fitted to the station's recording: { data } (null when there are none),
+// or { failed } if SyncLRC couldn't be asked. Remembered on this device once they're fitted.
 async function findLyrics(track, wanted) {
   const key = lyricsKey(track);
   const known = recallLyrics(key);
   if (known !== undefined) return { data: known, key };
-  let data = await synclrc(lyricsParams(track, track.title), wanted);
-  const cleaned = cleanTitle(track.title);
-  if (data === null && cleaned && cleaned !== track.title) data = await synclrc(lyricsParams(track, cleaned), wanted);
+  const data = await askSynclrc(track, wanted);
   if (data === undefined) return { failed: true };
-  rememberLyrics(key, data);
-  return { data, key, fresh: true };
+  const timed = data && !data.instrumental && track.duration && !track.live_dj;
+  const versions = timed ? await lyricsVersions(track, wanted) : [];
+  const fitted = fitLyrics(data, versions, track.duration);
+  // Without the versions, these can't be fitted: show them, but ask again next time
+  if (versions !== undefined) rememberLyrics(key, fitted);
+  return { data: fitted, key, fresh: true, versions };
 }
 
-// What to show from SyncLRC's answer. Timings only fit a recording of about the same length as the
-// one playing (within SYNC_TOLERANCE seconds); for another version, just the words.
+// What to show from the lyrics. Timings only fit a recording of about the same length as the one
+// playing (within SYNC_TOLERANCE seconds); for another version, just the words.
 function readLyrics(data, songDuration) {
   if (!data) return null;
   const text = typeof data.lyrics === 'string' ? data.lyrics : '';
   if (!text.trim()) return data.instrumental ? { instrumental: true, lines: [], plain: null, source: 'synclrc' } : null;
   const timed = data.type === 'karaoke' ? parseKaraoke(text) : data.type === 'synced' ? parseLrc(text) : [];
+  const shift = data.shift || 0;
+  if (shift) {
+    const move = (item) => {
+      item.start += shift;
+      if (item.end !== null) item.end += shift;
+    };
+    for (const line of timed) {
+      move(line);
+      line.words.forEach(move);
+    }
+  }
   const fits = !songDuration || !data.duration || Math.abs(data.duration - songDuration) <= SYNC_TOLERANCE;
   if (timed.some((line) => line.text) && fits) return { lines: timed, plain: null, source: 'synclrc', words: data.type === 'karaoke' };
   const plain = timed.length ? timed.map((line) => line.text).join('\n') : text;
@@ -1404,11 +1531,13 @@ function readLyrics(data, songDuration) {
 
 // For the admin page: what SyncLRC has for an uploaded song (asked within the same limit as the
 // lyrics on screen): 'words', 'synced', 'other' (timed, for another length of recording), 'plain',
-// 'instrumental', 'none', or 'unknown' if it couldn't be asked
+// 'instrumental', 'none', or 'unknown' if it couldn't be asked. One request a song, so a big batch
+// goes quickly; the lyrics are fitted to the file when the song first plays.
 async function lyricsCheck(song, wanted) {
-  const found = await findLyrics(song, wanted);
-  if (found.failed) return 'unknown';
-  const shown = readLyrics(found.data, song.duration);
+  const known = recallLyrics(lyricsKey(song));
+  const data = known !== undefined ? known : await askSynclrc(song, wanted);
+  if (data === undefined) return 'unknown';
+  const shown = readLyrics(data, song.duration);
   if (!shown) return 'none';
   if (shown.instrumental) return 'instrumental';
   if (shown.words) return 'words';
@@ -1643,8 +1772,9 @@ async function showLyrics(track) {
   await sleep(KARAOKE_RETRY_MS);
   const again = await synclrc(lyricsParams(track, track.title), wanted, true);
   if (!wanted() || !again || again.type !== 'karaoke') return;
-  rememberLyrics(found.key, again);
-  renderLyrics(readLyrics(again, track.duration), track);
+  const fitted = fitLyrics(again, found.versions, track.duration);
+  if (found.versions !== undefined) rememberLyrics(found.key, fitted);
+  renderLyrics(readLyrics(fitted, track.duration), track);
 }
 
 // Lyrics are on screen: the tab is open, or the full-screen view

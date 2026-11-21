@@ -40,8 +40,9 @@ const els = {
   play: $('play'),
   coverA: $('cover-a'),
   coverB: $('cover-b'),
-  ambientA: $('ambient-a'),
-  ambientB: $('ambient-b'),
+  ambient: $('ambient'),
+  art: $('art'),
+  player: $('player'),
   meta: $('meta'),
   themeColor: $('theme-color'),
   title: $('title'),
@@ -408,7 +409,15 @@ function startAudioGraph() {
       analyser.smoothingTimeConstant = 0.75;
       source.connect(analyser);
       analyser.connect(ctx.destination);
-      audioGraph = { ctx, source, analyser, data: new Uint8Array(analyser.frequencyBinCount) };
+      // A second, unsmoothed measure of the bass, for the background's beat
+      const bass = ctx.createAnalyser();
+      bass.fftSize = 1024;
+      bass.smoothingTimeConstant = 0;
+      source.connect(bass);
+      audioGraph = {
+        ctx, source, analyser, data: new Uint8Array(analyser.frequencyBinCount),
+        bass, bassData: new Uint8Array(bass.frequencyBinCount),
+      };
     } catch {
       return;
     }
@@ -477,7 +486,123 @@ function drawVisualiser() {
 
 function startVisualiser() {
   if (!vizFrame && audioGraph) vizFrame = requestAnimationFrame(drawVisualiser);
+  startAmbient();
 }
+
+// ---- Background: the cover, blurred and slowly turning, kicking with the beat ----
+
+// The cover is painted a few times, each copy turning at its own pace, into a tiny canvas that's
+// blurred and stretched over the whole screen (blurring something this small costs next to nothing).
+// Where the app can hear the music (the same browsers as the visualiser), each beat of the bass
+// swells it and brightens it for a moment, and nudges the cover. On iPhones and iPads it only turns.
+const AMBIENT_SIZE = 72;
+const AMBIENT_FADE_MS = 1600;
+const AMBIENT_LAYERS = [
+  // where each copy sits (0 to 1), its size, how fast it turns (radians a second) and drifts
+  { x: 0.28, y: 0.3, size: 1.25, spin: 0.11, drift: 0.07, phase: 0 },
+  { x: 0.76, y: 0.28, size: 1, spin: -0.15, drift: 0.09, phase: 1.7 },
+  { x: 0.3, y: 0.78, size: 1.05, spin: 0.18, drift: 0.08, phase: 3.1 },
+  { x: 0.74, y: 0.76, size: 1.3, spin: -0.09, drift: 0.06, phase: 4.4 },
+];
+const ambient = {
+  ctx: els.ambient.getContext('2d'),
+  art: null, // the cover now
+  prev: null, // the one before, while it fades out
+  shownAt: 0,
+  frame: 0,
+  last: 0,
+  beat: 0, // 1 on a beat, falling back to 0
+  avg: 0, // the bass's recent level, to tell a beat from a loud stretch
+  lastBeat: 0,
+};
+
+function setAmbientArt(img) {
+  if (img === ambient.art) return;
+  ambient.prev = ambient.art;
+  ambient.art = img;
+  ambient.shownAt = performance.now();
+  startAmbient();
+}
+
+function paintCover(img, alpha, seconds) {
+  const { ctx } = ambient;
+  const s = AMBIENT_SIZE;
+  ctx.globalAlpha = alpha;
+  // A whole-screen copy underneath, so there's no dark gap between the turning ones
+  ctx.drawImage(img, -s * 0.1, -s * 0.1, s * 1.2, s * 1.2);
+  for (const layer of AMBIENT_LAYERS) {
+    const angle = layer.phase + seconds * layer.spin;
+    const x = (layer.x + Math.cos(seconds * layer.drift + layer.phase) * 0.08) * s;
+    const y = (layer.y + Math.sin(seconds * layer.drift * 1.3 + layer.phase) * 0.08) * s;
+    const size = layer.size * s * (1 + ambient.beat * 0.07);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.globalAlpha = alpha * 0.82;
+    ctx.drawImage(img, -size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
+}
+
+function listenForBeat(t, dt) {
+  if (!audioGraph || els.app.dataset.playing !== 'true') {
+    ambient.beat = 0;
+    return;
+  }
+  const { bass, bassData } = audioGraph;
+  bass.getByteFrequencyData(bassData);
+  // The kick drum and bass line: about 40 to 170 Hz
+  const binHz = audioGraph.ctx.sampleRate / bass.fftSize;
+  const from = Math.max(1, Math.round(40 / binHz));
+  const to = Math.max(from + 1, Math.round(170 / binHz));
+  let sum = 0;
+  for (let i = from; i < to; i += 1) sum += bassData[i];
+  const level = sum / (to - from) / 255;
+  // A beat is a jump well above the last half second or so, and not too soon after the last one
+  if (level > 0.3 && level > ambient.avg * 1.15 + 0.025 && t - ambient.lastBeat > 260) {
+    ambient.beat = Math.min(1, 0.45 + (level - ambient.avg) * 4);
+    ambient.lastBeat = t;
+  } else {
+    ambient.beat *= Math.exp(-dt * 7); // fades in about a third of a second
+  }
+  ambient.avg += (level - ambient.avg) * Math.min(1, dt * 2.5);
+}
+
+function drawAmbient(t) {
+  ambient.frame = 0;
+  const dt = Math.min(0.1, (t - (ambient.last || t)) / 1000);
+  ambient.last = t;
+  listenForBeat(t, dt);
+  const { ctx } = ambient;
+  const s = AMBIENT_SIZE;
+  const seconds = reduceMotion ? 0 : t / 1000;
+  const fade = Math.min(1, (t - ambient.shownAt) / AMBIENT_FADE_MS);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.clearRect(0, 0, s, s);
+  if (ambient.prev && fade < 1) paintCover(ambient.prev, 1 - fade, seconds);
+  if (ambient.art) paintCover(ambient.art, fade, seconds);
+  if (fade >= 1) ambient.prev = null;
+  // Brighter for a moment on the beat
+  if (ambient.beat > 0.02) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = ambient.beat * 0.22;
+    ctx.drawImage(els.ambient, 0, 0);
+  }
+  els.ambient.style.scale = String(1 + ambient.beat * 0.035);
+  els.art.style.scale = ambient.beat > 0.02 ? String(1 + ambient.beat * 0.018) : '';
+  // Keep going while the music plays (and the page is seen), or until the new cover has faded in
+  const moving = !reduceMotion && wantPlaying && !document.hidden;
+  if (moving || fade < 1) ambient.frame = requestAnimationFrame(drawAmbient);
+}
+
+function startAmbient() {
+  if (!ambient.frame) ambient.frame = requestAnimationFrame(drawAmbient);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) startAmbient();
+});
 
 // ---- Sleep timer ----
 
@@ -658,7 +783,6 @@ function currentTrack() {
 const BRAND_THEME = { tint1: 'hsl(232 45% 10%)', tint2: 'hsl(250 70% 32%)', accent: 'hsl(170 80% 62%)', ink: '#04140F' };
 let coverRequest = '';
 let frontCover = els.coverA;
-let frontAmbient = els.ambientA;
 
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
@@ -785,12 +909,8 @@ function setCover(url) {
       back.classList.add('is-front');
       frontCover.classList.remove('is-front');
       frontCover = back;
-      // The same cover, blurred, behind everything (not the station logo)
-      const ambient = frontAmbient === els.ambientA ? els.ambientB : els.ambientA;
-      if (src !== FALLBACK_COVER) ambient.src = src;
-      ambient.classList.toggle('is-front', src !== FALLBACK_COVER);
-      frontAmbient.classList.remove('is-front');
-      frontAmbient = ambient;
+      // The same cover, blurred and turning, behind everything (not the station logo)
+      setAmbientArt(src !== FALLBACK_COVER ? img : null);
       applyTheme(themeFrom(cors && src !== FALLBACK_COVER ? coverColors(img) : null));
     })
     .catch(() => {
@@ -2056,7 +2176,9 @@ if (location.hash === '#admin') openAdmin();
 
 // ---- Tabs ----
 
+// "Playing" is the big player; on the other views it shrinks to a bar (see styles.css)
 const tabs = [
+  { name: 'playing', tab: $('tab-playing'), panel: null },
   { name: 'lyrics', tab: els.tabLyrics, panel: els.lyricsPanel },
   { name: 'request', tab: els.tabRequest, panel: els.requestPanel },
   { name: 'top', tab: els.tabTop, panel: els.topPanel },
@@ -2068,9 +2190,9 @@ function selectTab(name) {
     const selected = t.name === name;
     t.tab.setAttribute('aria-selected', String(selected));
     t.tab.tabIndex = selected ? 0 : -1;
-    t.panel.hidden = !selected;
+    if (t.panel) t.panel.hidden = !selected;
   }
-  try { localStorage.setItem('taco-tab', name); } catch { /* storage unavailable */ }
+  els.app.dataset.view = name;
   if (name === 'lyrics') jumpToCurrentLine();
   if (name === 'request') loadLibrary();
   if (name === 'top') loadCharts();
@@ -2079,16 +2201,21 @@ function selectTab(name) {
 tabs.forEach((t, i) => {
   t.tab.addEventListener('click', () => selectTab(t.name));
   t.tab.addEventListener('keydown', (event) => {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-    const next = tabs[(i + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    const forward = event.key === 'ArrowRight' || event.key === 'ArrowDown';
+    if (!forward && event.key !== 'ArrowLeft' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    const next = tabs[(i + (forward ? 1 : tabs.length - 1)) % tabs.length];
     selectTab(next.name);
     next.tab.focus();
   });
 });
-try {
-  const saved = localStorage.getItem('taco-tab');
-  if (tabs.some((t) => t.name === saved)) selectTab(saved);
-} catch { /* storage unavailable */ }
+selectTab('playing');
+try { localStorage.removeItem('taco-tab'); } catch { /* storage unavailable */ }
+
+// The player bar (on the other views) opens the big player, except where a button was pressed
+els.player.addEventListener('click', (event) => {
+  if (els.app.dataset.view !== 'playing' && !event.target.closest('button, input, .menu')) selectTab('playing');
+});
 
 // Line this device's clock up with the server's, using the freshest of recent readings
 function syncClock(data, sent, received) {

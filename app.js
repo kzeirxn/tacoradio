@@ -121,6 +121,9 @@ const hasMediaSession = 'mediaSession' in navigator;
 
 const audio = new Audio();
 audio.preload = 'none';
+// Fetched like the feed (without cookies), so the plain player can reuse the connection the feed
+// already has open to the server instead of setting up a new one each time play is pressed
+audio.crossOrigin = 'anonymous';
 
 let wantPlaying = false;
 let retryTimer = null;
@@ -198,7 +201,7 @@ function closeConnection() {
 }
 
 // Feed the stream to the player in pieces as it downloads, noting when each piece arrived
-async function pumpStream(source, conn) {
+async function pumpStream(source, conn, response) {
   let buffer;
   try {
     buffer = source.addSourceBuffer('audio/mpeg');
@@ -240,7 +243,7 @@ async function pumpStream(source, conn) {
     }
     appendNext();
   });
-  const res = await fetch(`${conn.low ? STREAM_URL_LOW : STREAM_URL}?t=${Date.now()}`, { signal: conn.abort.signal, cache: 'no-store' });
+  const res = await response;
   if (res.status === 404 && conn.low) lowUnavailable = true; // the normal stream from now on
   if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
   const reader = res.body.getReader();
@@ -257,10 +260,13 @@ function connectMediaSource() {
   const source = new MediaSource();
   const conn = { abort: new AbortController(), origin: Infinity, lastArrival: 0, played: false, mediaSource: true, low: useLowStream() };
   connection = conn;
+  // Ask for the stream straight away, while the player is still getting ready for it
+  const response = fetch(`${conn.low ? STREAM_URL_LOW : STREAM_URL}?t=${Date.now()}`, { signal: conn.abort.signal, cache: 'no-store' });
+  response.catch(() => {}); // handled once the player is ready
   audio.src = URL.createObjectURL(source);
   source.addEventListener('sourceopen', () => {
     URL.revokeObjectURL(audio.src);
-    pumpStream(source, conn).catch(() => {
+    pumpStream(source, conn, response).catch(() => {
       if (connection === conn) reconnect();
     });
   }, { once: true });

@@ -27,7 +27,7 @@ const LIVE_POLL_MS = 10000;
 const DEFAULT_LISTEN_DELAY = 1.2;
 // Icecast sends this much audio from just before "now" when a player connects (16 KB: 1 s at
 // 128 kbps, twice that on the data saver stream)
-const BURST_SECONDS = 4;
+const BURST_SECONDS = 1;
 // Audio reaches listeners about this long after the AutoDJ starts it (measured: 0.1 to 0.25 s)
 const STREAM_LATENCY = 0.15;
 // How long connecting to the stream takes before audio arrives, until the feed has been timed

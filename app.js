@@ -29,7 +29,7 @@ const DEFAULT_LISTEN_DELAY = 4.3;
 // start at once (burst-size 64 KB: 4 s at 128 kbps, twice that on the data saver stream).
 // Keep this in step with burst-size in the server's icecast.xml: on iPhones and iPads it's how the
 // app knows how far behind live the listener is, and so when to show each lyric.
-const BURST_SECONDS = 4;
+const BURST_SECONDS = 0.5;
 // Audio reaches listeners about this long after the AutoDJ starts it (measured: 0.1 to 0.25 s)
 const STREAM_LATENCY = 0.15;
 // How long connecting to the stream takes before audio arrives, until the feed has been timed

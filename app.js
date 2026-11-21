@@ -1363,6 +1363,18 @@ function cleanTitle(title) {
     .trim();
 }
 
+// Lines that aren't sung: who sings next ("Bruno Mars/B.o.B:", sometimes with a full-width colon)
+// and credits ("Written by: ...", "作词 : ..."), which some lyrics include, timed like a sung line
+const CREDIT_LINE = /^(?:(?:lyrics|music|composed|composer|written|writer|produced|producer|arranged|mixed|mastered)\b|作词|作曲|编曲|制作人)[^:：]{0,40}[:：]/i;
+function notSung(text) {
+  const t = text.trim();
+  if (!t) return false;
+  if (CREDIT_LINE.test(t)) return true;
+  // A short line ending in a colon, every word capitalised like names ("Listen to me:" is sung)
+  const words = t.slice(0, -1).trim().split(/\s+/);
+  return /[:：﹕]$/.test(t) && words.length <= 6 && words.every((w) => !/^\p{Ll}/u.test(w));
+}
+
 // Line-timed lyrics: [00:12.30]Hello world. {bg} marks a background vocals line, {agent:...} who sings.
 function parseLrc(lrc) {
   const lines = [];
@@ -1370,6 +1382,7 @@ function parseLrc(lrc) {
     const stamps = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
     const background = raw.includes('{bg}');
     const text = raw.replace(/\[[^\]]*\]/g, '').replace(/\{[^}]*\}/g, '').trim();
+    if (notSung(text)) continue;
     for (const m of stamps) {
       lines.push({ text, start: parseInt(m[1], 10) * 60 + parseFloat(m[2]), end: null, words: [], background });
     }
@@ -1404,7 +1417,9 @@ function parseKaraoke(text) {
       if (!rest.trim()) lines.push({ text: '', start, end: null, words: [] }); // a break
       continue;
     }
-    lines.push({ text: words.map((w) => w.text).join('').trim(), start, end: words[words.length - 1].end, words, background });
+    const lineText = words.map((w) => w.text).join('').trim();
+    if (notSung(lineText)) continue;
+    lines.push({ text: lineText, start, end: words[words.length - 1].end, words, background });
   }
   return lines.sort((a, b) => a.start - b.start);
 }
@@ -1422,14 +1437,14 @@ function parseKaraoke(text) {
 
 const SYNCLRC_LIMIT = 25; // requests a minute
 const SYNCLRC_PAUSE_MS = 60000; // after "too many requests"
-const LYRICS_STORE = 'taco-lyrics-v3'; // v2 held lyrics not yet fitted to the station's files
+const LYRICS_STORE = 'taco-lyrics-v4'; // v3 missed the fit for word timings split into other lines
 const LYRICS_KEEP_MS = 7 * 86400000; // lyrics found
 const MISS_KEEP_MS = 6 * 3600000; // songs SyncLRC had nothing for
 const LYRICS_STORE_SIZE = 80; // songs remembered
 let synclrcPausedUntil = 0;
 const synclrcSent = []; // when recent requests went out (ms)
 const lyricsMemory = new Map(); // in case this device can't store anything
-try { localStorage.removeItem('taco-lyrics-v2'); } catch { /* storage unavailable */ }
+try { ['taco-lyrics-v2', 'taco-lyrics-v3'].forEach((old) => localStorage.removeItem(old)); } catch { /* storage unavailable */ }
 
 // Wait for room under the limit. Returns false if the song changed meanwhile.
 async function synclrcTurn(wanted) {
@@ -1541,9 +1556,42 @@ function lineOffset(lines, reference) {
       }
     }
   }
+  return agreedOffset(diffs);
+}
+
+// The offset most of the matches agree on, or null if there aren't enough or they don't agree
+function agreedOffset(diffs) {
   if (diffs.length < 5) return null;
   const mid = median(diffs);
   return median(diffs.map((d) => Math.abs(d - mid))) <= 0.3 ? mid : null;
+}
+
+// The same, for word-by-word lyrics, which are often split into lines differently from the others
+// ("Beautiful girls" / "All over the world" for one line): each reference line is found by its
+// first few words, wherever they fall in the word-by-word lines
+function wordOffset(lines, reference) {
+  const words = [];
+  for (const line of lines) {
+    if (line.background) continue;
+    for (const word of line.words) {
+      for (const key of lineKey(word.text).split(' ')) if (key) words.push({ key, start: word.start });
+    }
+  }
+  const diffs = [];
+  let j = 0;
+  for (const ref of reference) {
+    const keys = lineKey(ref.text).split(' ').filter(Boolean).slice(0, 3);
+    if (keys.length < 2 || ref.background) continue;
+    const last = Math.min(words.length - keys.length, j + 60);
+    for (let k = j; k <= last; k += 1) {
+      if (keys.every((key, n) => words[k + n].key === key)) {
+        diffs.push(ref.start - words[k].start);
+        j = k + keys.length;
+        break;
+      }
+    }
+  }
+  return agreedOffset(diffs);
 }
 
 // The version made for a recording this long: the closest in length and, where several copies are
@@ -1572,7 +1620,9 @@ function fitLyrics(data, versions, duration) {
   const reference = pickVersion(versions, duration);
   if (!reference) return data;
   if (data.type === 'karaoke') {
-    const shift = lineOffset(parseKaraoke(data.lyrics), reference.lines);
+    const karaoke = parseKaraoke(data.lyrics);
+    let shift = wordOffset(karaoke, reference.lines);
+    if (shift === null) shift = lineOffset(karaoke, reference.lines);
     if (shift === null || Math.abs(shift) > SHIFT_MAX) return data;
     return { ...data, duration: reference.duration, shift: Math.abs(shift) >= SHIFT_MIN ? Math.round(shift * 100) / 100 : 0 };
   }
@@ -1652,7 +1702,7 @@ function readLyrics(data, songDuration) {
   }
   const fits = !songDuration || !data.duration || Math.abs(data.duration - songDuration) <= SYNC_TOLERANCE;
   if (timed.some((line) => line.text) && fits) return { lines: timed, plain: null, source: 'synclrc', words: data.type === 'karaoke' };
-  const plain = timed.length ? timed.map((line) => line.text).join('\n') : text;
+  const plain = timed.length ? timed.map((line) => line.text).join('\n') : text.split('\n').filter((line) => !notSung(line)).join('\n');
   if (!plain.trim()) return null;
   return { lines: [], plain, source: 'synclrc', otherVersion: timed.length > 0 && !fits };
 }

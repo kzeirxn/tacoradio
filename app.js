@@ -23,11 +23,13 @@ const POLL_MS = 2000;
 const LIVE_POLL_MS = 10000;
 // Listeners hear the stream a little behind the feed, so titles, progress and lyrics are held
 // back to match. While playing, the app works out the delay from the stream itself; this is the
-// guess used when it isn't playing (typical when playing: about 1.2 s).
-const DEFAULT_LISTEN_DELAY = 1.2;
-// Icecast sends this much audio from just before "now" when a player connects (16 KB: 1 s at
-// 128 kbps, twice that on the data saver stream)
-const BURST_SECONDS = 1;
+// guess used when it isn't playing (typical when playing: about 4.3 s, mostly the burst below).
+const DEFAULT_LISTEN_DELAY = 4.3;
+// Icecast sends this much audio from just before "now" when a player connects, so playback can
+// start at once (burst-size 64 KB: 4 s at 128 kbps, twice that on the data saver stream).
+// Keep this in step with burst-size in the server's icecast.xml: on iPhones and iPads it's how the
+// app knows how far behind live the listener is, and so when to show each lyric.
+const BURST_SECONDS = 4;
 // Audio reaches listeners about this long after the AutoDJ starts it (measured: 0.1 to 0.25 s)
 const STREAM_LATENCY = 0.15;
 // How long connecting to the stream takes before audio arrives, until the feed has been timed

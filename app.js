@@ -42,6 +42,7 @@ const els = {
   coverB: $('cover-b'),
   ambient: $('ambient'),
   art: $('art'),
+  player: $('player'),
   meta: $('meta'),
   themeColor: $('theme-color'),
   title: $('title'),
@@ -2175,7 +2176,9 @@ if (location.hash === '#admin') openAdmin();
 
 // ---- Tabs ----
 
+// "Playing" is the big player; on the other views it shrinks to a bar (see styles.css)
 const tabs = [
+  { name: 'playing', tab: $('tab-playing'), panel: null },
   { name: 'lyrics', tab: els.tabLyrics, panel: els.lyricsPanel },
   { name: 'request', tab: els.tabRequest, panel: els.requestPanel },
   { name: 'top', tab: els.tabTop, panel: els.topPanel },
@@ -2187,9 +2190,9 @@ function selectTab(name) {
     const selected = t.name === name;
     t.tab.setAttribute('aria-selected', String(selected));
     t.tab.tabIndex = selected ? 0 : -1;
-    t.panel.hidden = !selected;
+    if (t.panel) t.panel.hidden = !selected;
   }
-  try { localStorage.setItem('taco-tab', name); } catch { /* storage unavailable */ }
+  els.app.dataset.view = name;
   if (name === 'lyrics') jumpToCurrentLine();
   if (name === 'request') loadLibrary();
   if (name === 'top') loadCharts();
@@ -2198,16 +2201,21 @@ function selectTab(name) {
 tabs.forEach((t, i) => {
   t.tab.addEventListener('click', () => selectTab(t.name));
   t.tab.addEventListener('keydown', (event) => {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-    const next = tabs[(i + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    const forward = event.key === 'ArrowRight' || event.key === 'ArrowDown';
+    if (!forward && event.key !== 'ArrowLeft' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    const next = tabs[(i + (forward ? 1 : tabs.length - 1)) % tabs.length];
     selectTab(next.name);
     next.tab.focus();
   });
 });
-try {
-  const saved = localStorage.getItem('taco-tab');
-  if (tabs.some((t) => t.name === saved)) selectTab(saved);
-} catch { /* storage unavailable */ }
+selectTab('playing');
+try { localStorage.removeItem('taco-tab'); } catch { /* storage unavailable */ }
+
+// The player bar (on the other views) opens the big player, except where a button was pressed
+els.player.addEventListener('click', (event) => {
+  if (els.app.dataset.view !== 'playing' && !event.target.closest('button, input, .menu')) selectTab('playing');
+});
 
 // Line this device's clock up with the server's, using the freshest of recent readings
 function syncClock(data, sent, received) {

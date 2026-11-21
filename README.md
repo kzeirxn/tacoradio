@@ -51,9 +51,11 @@ An installable web player (PWA) for the Taco Music live stream.
 - **Data saver:** automatic (the 64 kbps stream on mobile data or with the browser's data saver
   on), always on, or off. Changing it while playing switches streams straight away. If the server
   doesn't have the small stream, the normal one is used.
-- **Layout:** on phones, the cover sits beside the song with the controls under it, and the
-  lyrics (or requests, top songs, recently played) fill the rest of the screen; on wide screens the
-  player is on the left and the panel beside it. The page always fits the screen.
+- **Layout:** laid out like an app, with five views: Playing, Lyrics, Request, Top and Recent. On
+  phones they're in a tab bar along the bottom; on wide screens, in a sidebar. Playing is the big
+  player (the cover above the song on phones, beside it on wide screens). On the other views the
+  player shrinks to a bar (above the tab bar on phones, along the bottom on wide screens), and tapping
+  it opens Playing again. Only the view in the middle scrolls, and the app opens on Playing.
 - **Moving background:** the cover, blurred, painted several times over and slowly turning, as in
   Apple Music. Where the app can hear the music (the same browsers as the visualiser), each beat of
   the bass swells and brightens it for a moment and nudges the cover. On iPhones and iPads it turns

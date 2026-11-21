@@ -14,12 +14,16 @@ An installable web player (PWA) for the Taco Music live stream.
   own smaller lines, otherwise line-by-line timings or just the words. Timings are only used for a
   recording within `SYNC_TOLERANCE` seconds of the length the feed gives for the playing file; for
   another version, the words show without following along.
+- **Only what's sung:** some lyrics include who sings next ("Bruno Mars/B.o.B:") or credits
+  ("Written by: ..."), timed like sung lines, which made the words light up late at each new verse.
+  The app leaves those out (a short line ending in a colon with every word capitalised, or a credit).
 - **Fitted to the station's files:** SyncLRC keeps one version of each song's lyrics, timed for
   whichever recording it met first, and different copies of a song can be timed a second or more
   apart. So the app also asks SyncLRC for every version it knows, with each one's length, and uses
   the line timings of the version made for a recording as long as the station's file (where several
   copies are that long, the timing most of them agree on, so one badly timed copy can't win). Word
-  timings are checked against that version line by line and moved to match it if they're out by
+  timings are checked against that version, by the first words of each of its lines (word-by-word
+  lyrics are often split into lines differently), and moved to match it if they're out by
   `SHIFT_MIN` seconds or more. Lyrics are only remembered on the device once they've been fitted.
 - **Held words glow:** as on Apple Music, a word sung for a second or more (`LONG_WORD`) lights up
   letter by letter, each letter lifting a little, with a soft glow in the cover's colour that builds

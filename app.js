@@ -372,6 +372,7 @@ function play() {
   } else {
     const low = useLowStream();
     connection = { requestedAt: clock(), played: false, low };
+    probeStream(connection);
     if ('srcObject' in audio) audio.srcObject = null;
     audio.src = `${low ? STREAM_URL_LOW : STREAM_URL}?t=${Date.now()}`;
   }
@@ -396,6 +397,76 @@ function stop() {
   setState('idle');
 }
 
+// ---- Measuring the plain player's delay ----
+// The plain player (Safari on iPhones, iPads and Macs, where MP3 can't go through Media Source)
+// doesn't show the app what it downloads, so the app can't see its delay directly. It's made of two
+// parts: how long the player took to start once audio began arriving, and the burst it was sent from
+// before "now". So when the plain player connects, the app opens a second, short copy of the stream
+// at the same moment and measures both on it: how long the server took to start sending (on this
+// network, right now), and how much audio came in beyond what had been broadcast meanwhile (the
+// burst). It reads for a couple of seconds and then hangs up.
+const PROBE_SECONDS = 2.5;
+
+// The bitrate from the first MP3 frame header, in bits per second (null if none is found)
+function mp3Bitrate(bytes) {
+  const v1 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+  const v2 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+  for (let i = 0; i + 3 < bytes.length; i += 1) {
+    if (bytes[i] !== 0xff || (bytes[i + 1] & 0xe0) !== 0xe0) continue;
+    const version = (bytes[i + 1] >> 3) & 3; // 3: MPEG 1, 2: MPEG 2, 0: MPEG 2.5
+    const layer = (bytes[i + 1] >> 1) & 3; // 1: layer III
+    const index = bytes[i + 2] >> 4;
+    const rate = (bytes[i + 2] >> 2) & 3;
+    if (version === 1 || layer !== 1 || index === 0 || index === 15 || rate === 3) continue;
+    return (version === 3 ? v1 : v2)[index] * 1000;
+  }
+  return null;
+}
+
+async function probeStream(conn) {
+  const abort = new AbortController();
+  const sent = clock();
+  const finish = (result) => {
+    abort.abort();
+    if (result) conn.probe = result;
+  };
+  try {
+    const res = await fetch(`${conn.low ? STREAM_URL_LOW : STREAM_URL}?t=${Date.now()}&probe`, { signal: abort.signal, cache: 'no-store' });
+    if (!res.ok || !res.body) return finish(null);
+    const reader = res.body.getReader();
+    let first = 0;
+    let bytes = 0;
+    let head = null;
+    for (;;) {
+      if (connection !== conn) return finish(null); // the listener moved on
+      const { done, value } = await reader.read();
+      if (done) return finish(null);
+      const at = clock();
+      if (!first) first = at;
+      if (!head) head = value.slice(0, 4096);
+      bytes += value.length;
+      if (at - first >= PROBE_SECONDS) {
+        const bitrate = mp3Bitrate(head) || (conn.low ? 64000 : 128000);
+        const burst = Math.max(0, (bytes * 8) / bitrate - (at - first));
+        try { localStorage.setItem(conn.low ? 'taco-burst-low' : 'taco-burst', burst.toFixed(2)); } catch { /* storage unavailable */ }
+        return finish({ connect: first - sent, burst });
+      }
+    }
+  } catch {
+    return finish(null);
+  }
+}
+
+// How far behind live the plain player was when it began playing: from when its audio began
+// arriving until it played, plus the burst. Measured by probeStream; until that's done (it takes a
+// couple of seconds), from the feed's round trips and the burst last measured on this device.
+function plainStartDelay(conn) {
+  const { probe } = conn;
+  const connect = probe ? probe.connect : connectSeconds();
+  const burst = probe ? probe.burst : burstSeconds();
+  return Math.max(0, conn.playingAt - conn.requestedAt - connect) + burst + STREAM_LATENCY;
+}
+
 // How far behind the broadcast this listener is hearing, in seconds
 // When not listening, the app shows what's on air now, exactly as the now-playing feed has it
 // (elapsed time, song changes, lyrics); while listening, what this listener hears.
@@ -414,7 +485,7 @@ function measureListenDelay() {
     behind = clock() - (connection.origin + audio.currentTime) + STREAM_LATENCY;
   } else if (connection.playingAt) {
     // Plain player: the delay when playback began, plus any time spent waiting for data since
-    behind = connection.startDelay
+    behind = plainStartDelay(connection)
       + (clock() - connection.playingAt) - (audio.currentTime - connection.playingPosition);
   }
   if (behind !== null && behind >= 0 && behind < 300) listenDelay = behind;
@@ -448,12 +519,9 @@ audio.addEventListener('playing', () => {
     connection.played = true;
     if (!connection.mediaSource) {
       // The plain player collects audio before it starts, and everything collected puts the
-      // listener further behind. Time it: from asking for the stream (less connecting) to playing,
-      // plus the audio Icecast sends from before the moment of connecting.
+      // listener further behind: note when it started (see plainStartDelay)
       connection.playingAt = clock();
       connection.playingPosition = audio.currentTime;
-      connection.startDelay = Math.max(0, connection.playingAt - connection.requestedAt - connectSeconds())
-        + burstSeconds() + STREAM_LATENCY;
     }
   }
 });

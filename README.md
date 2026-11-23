@@ -66,7 +66,7 @@ An installable web player (PWA) for the Taco Music live stream.
   without the beat. It also shows behind the full-screen lyrics, and stays still for listeners who
   ask for reduced motion.
 - **Visualiser:** bars on the cover, in its colour, where the app plays the stream through Media
-  Source (not on iPhones and iPads, where routing audio through Web Audio would stop background
+  Source (but never on iPhones and iPads, where routing audio through Web Audio would stop background
   playback), and not for listeners who ask for reduced motion.
 - **Live DJs and jingles:** a live DJ shows with a badge and no progress bar, and their songs' lyrics
   as words only (a DJ's song can start anywhere); a station ident shows as the station.
@@ -93,9 +93,22 @@ and the server's clock, and the app works out how far behind the broadcast the l
   about a second, instead of the 7 to 8 seconds Chrome otherwise collects first. Because the app
   knows when each piece of the stream arrived, it knows exactly which moment of the broadcast is
   playing, including after network stalls.
-- **iPhone and iPad** keep the plain player, so audio carries on in the background. There the app
-  times how long the player took to start (less the connection time, measured from the feed
-  requests) and adds any time spent waiting for data.
+- **iPhone and iPad** (iOS 17.1 and later) do the same through Apple's ManagedMediaSource. If that
+  stalls or is paused by iOS while the phone is locked or the app is in the background, the app
+  switches to the plain player for the rest of the visit, which always plays on in the background.
+  Older iPhones use the plain player throughout. There the app times how long the player took to
+  start (less the connection time, measured from the feed requests), adds the burst (as last
+  measured on the device, else `BURST_SECONDS`) and any time spent waiting for data since.
+- **Phones and computers tuned separately** (`PROFILES`): Icecast's burst (4 s) lets players start at
+  once, but leaves them that far behind live. Where the app downloads the stream itself, it skips
+  most of the burst and keeps only `buffer` seconds in hand: 1.5 s on computers, 3 s on phones,
+  4.5 s on mobile data, so phones ride out a weak signal. If playback falls behind after a stall,
+  it plays 4% faster (same pitch) to catch up, or skips ahead if it's far behind. Each profile also
+  sets how soon to reconnect after a drop (sooner on phones, growing if it keeps failing), and the
+  app reconnects the moment the device is back online. Moving between Wi-Fi and mobile data
+  switches profile as it plays. Phones draw the moving background at 30 frames a second.
+- **Not listening:** the elapsed time, song changes and lyrics follow the feed exactly (what's on
+  air now). While listening, they follow what this listener hears.
 - **Clock:** the device's clock is lined up with the server's from the quickest of the last 30
   live updates, or without them the freshest of the last 20 feed readings.
 - **Live updates:** the request service streams the playing song's elapsed and remaining time with
@@ -106,8 +119,8 @@ and the server's clock, and the app works out how far behind the broadcast the l
 
 Measured against a test stream with beeps at known moments, the lyrics clock is within about
 0.15 s of what's heard, on both kinds of player and after network stalls. `STREAM_LATENCY` is
-the measured time for audio to get from the AutoDJ to listeners; `DEFAULT_LISTEN_DELAY` is used
-when the app isn't playing.
+the measured time for audio to get from the AutoDJ to listeners; each profile's `delayGuess` is
+used while connecting.
 
 ## Files
 

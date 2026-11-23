@@ -107,8 +107,13 @@ and the server's clock, and the app works out how far behind the broadcast the l
   sets how soon to reconnect after a drop (sooner on phones, growing if it keeps failing), and the
   app reconnects the moment the device is back online. Moving between Wi-Fi and mobile data
   switches profile as it plays. Phones draw the moving background at 30 frames a second.
-- **Not listening:** the elapsed time, song changes and lyrics follow the feed exactly (what's on
-  air now). While listening, they follow what this listener hears.
+- **Not listening:** the elapsed time, song changes and lyrics assume a typical listener on this kind
+  of device (each profile's `delayGuess`), so they keep in time with the radio playing on another
+  device nearby. While listening, they follow what this listener hears.
+- **Crossfades:** the feed stamps each song's start late, around the end of the AutoDJ's crossfade.
+  Measured on the stream (where the new song's sound first appears), songs really start 2 to 4 s
+  earlier; the app allows for 2.75 s (`SONG_START_EARLY`). Stamping the start where the song
+  really begins, on the server, would make this exact.
 - **Clock:** the device's clock is lined up with the server's from the quickest of the last 30
   live updates, or without them the freshest of the last 20 feed readings.
 - **Live updates:** the request service streams the playing song's elapsed and remaining time with

@@ -21,9 +21,10 @@ const CHARTS_URL = `${REQUEST_API}/charts`;
 // within a couple of seconds; with them, just for the listener count and recently played
 const POLL_MS = 2000;
 const LIVE_POLL_MS = 10000;
-// Listeners hear the stream a little behind the feed, so while they listen, titles, progress and
-// lyrics are held back to match: the app works out the delay from the stream itself. When nobody's
-// listening on this device, it shows the feed's own timing.
+// Listeners hear the stream a little behind the feed, so titles, progress and lyrics are held back to
+// match: while listening, the app works out the delay from the stream itself. When nobody's listening
+// on this device, it assumes a typical listener on this kind of device (the profile's delayGuess), so
+// it keeps in time with the radio playing on another device nearby.
 // Icecast sends this much audio from just before "now" when a player connects, so playback can
 // start at once (burst-size 64 KB: 4 s at 128 kbps, twice that on the data saver stream). The app
 // measures it whenever it downloads the stream itself (see measureBurst), so this is only used by
@@ -31,6 +32,12 @@ const LIVE_POLL_MS = 10000;
 const BURST_SECONDS = 4;
 // Audio reaches listeners about this long after the AutoDJ starts it (measured: 0.1 to 0.25 s)
 const STREAM_LATENCY = 0.15;
+// The AutoDJ crossfades, and the feed stamps a song's start late, around the end of the crossfade:
+// the song is really in the stream this much earlier. Measured on the stream itself (where the new
+// song's sound first appears) at three song changes: 2.1, 2.75 and about 4 s early. It varies with
+// each crossfade, so this is the middle one; stamping the start where the song really begins, on
+// the server, would make it exact.
+const SONG_START_EARLY = 2.75;
 // How long connecting to the stream takes before audio arrives, until the feed has been timed
 const CONNECT_SECONDS = 0.4;
 const FALLBACK_COVER = 'icons/icon-maskable-512.png'; // the logo, edge to edge, when a song has no cover
@@ -134,7 +141,7 @@ let feed = null;
 let shownKey;
 let shownTrack = null;
 let historySig = '';
-let listenDelay = 0; // not listening yet: show what's on air
+let listenDelay = 0;
 let clockOffset = 0;
 const clockSamples = [];
 const roundTrips = []; // how long recent feed requests took, a guide to how long connecting takes
@@ -396,15 +403,10 @@ function stop() {
   setState('idle');
 }
 
-// How far behind the broadcast this listener is hearing, in seconds
-// When not listening, the app shows what's on air now, exactly as the now-playing feed has it
-// (elapsed time, song changes, lyrics); while listening, what this listener hears.
+// How far behind the broadcast this listener is hearing, in seconds (when not listening on this
+// device, a typical listener on this kind of device)
 function measureListenDelay() {
-  if (!wantPlaying) {
-    listenDelay = 0;
-    return;
-  }
-  if (!connection) {
+  if (!wantPlaying || !connection) {
     listenDelay = playbackProfile().delayGuess;
     return;
   }
@@ -890,7 +892,7 @@ function currentTrack() {
   const np = feed && feed.now_playing;
   const history = (feed && feed.history) || [];
   if (!np) return { track: null, history };
-  if (np.started_at && now() < np.started_at + listenDelay && history[0]) {
+  if (np.started_at && now() < np.started_at - SONG_START_EARLY + listenDelay && history[0]) {
     // Listeners are still hearing the previous song
     const previous = shownTrack && shownTrack.text === history[0].text
       ? shownTrack
@@ -1854,7 +1856,7 @@ function setLyricsStatus(text, kind = 'note') {
 
 // Where in the song listeners are, in seconds, going by the feed's start time and length
 function songPosition(track) {
-  return now() - track.started_at - listenDelay;
+  return now() - (track.started_at - SONG_START_EARLY) - listenDelay;
 }
 
 // Backing vocals, written in brackets, are shown smaller and lighter

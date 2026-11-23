@@ -2099,6 +2099,9 @@ function syncLongWord(word, t) {
   if (glow !== word.glow) {
     word.glow = glow;
     word.el.style.setProperty('--g', glow);
+    // Letters are only lifted and glowing while lit: the rest of the time they're plain text, as
+    // iPhones can leave stray marks beside unlit lifted letters in the blurred lines
+    word.el.classList.toggle('glowing', glow > 0);
   }
   const n = word.letters.length;
   word.letters.forEach((letter, i) => {

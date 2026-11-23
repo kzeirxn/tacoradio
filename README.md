@@ -111,8 +111,8 @@ and the server's clock, and the app works out how far behind the broadcast the l
   of device (each profile's `delayGuess`), so they keep in time with the radio playing on another
   device nearby. While listening, they follow what this listener hears.
 - **Crossfades:** the feed stamps each song's start late, around the end of the AutoDJ's crossfade.
-  Measured on the stream (where the new song's sound first appears), songs really start 2 to 4 s
-  earlier; the app allows for 2.75 s (`SONG_START_EARLY`). Stamping the start where the song
+  The app allows for 1.25 s (`SONG_START_EARLY`), tuned by listening: with none, lyrics ran a
+  little behind; with 2.75 s, 1 to 2 s ahead. Stamping the start where the song
   really begins, on the server, would make this exact.
 - **Clock:** the device's clock is lined up with the server's from the quickest of the last 30
   live updates, or without them the freshest of the last 20 feed readings.

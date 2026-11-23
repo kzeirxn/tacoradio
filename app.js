@@ -32,12 +32,12 @@ const LIVE_POLL_MS = 10000;
 const BURST_SECONDS = 4;
 // Audio reaches listeners about this long after the AutoDJ starts it (measured: 0.1 to 0.25 s)
 const STREAM_LATENCY = 0.15;
-// The AutoDJ crossfades, and the feed stamps a song's start late, around the end of the crossfade:
-// the song is really in the stream this much earlier. Measured on the stream itself (where the new
-// song's sound first appears) at three song changes: 2.1, 2.75 and about 4 s early. It varies with
-// each crossfade, so this is the middle one; stamping the start where the song really begins, on
-// the server, would make it exact.
-const SONG_START_EARLY = 2.75;
+// The AutoDJ crossfades, and the feed stamps a song's start a little late, partway through the
+// crossfade: the song is really in the stream this much earlier. Tuned by listening: with no
+// allowance lyrics ran a little behind on every device, and with 2.75 s they ran 1 to 2 s ahead.
+// It varies with each crossfade; stamping the start where the song really begins, on the server,
+// would make it exact.
+const SONG_START_EARLY = 1.25;
 // How long connecting to the stream takes before audio arrives, until the feed has been timed
 const CONNECT_SECONDS = 0.4;
 const FALLBACK_COVER = 'icons/icon-maskable-512.png'; // the logo, edge to edge, when a song has no cover

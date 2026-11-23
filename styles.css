@@ -835,7 +835,8 @@ h1 {
 /* Held words: each letter lights up in turn and lifts a little, and the word glows while it's held,
    lingering a moment after (--f: how lit a letter is, --g: how strong the glow is, both 0 to 1) */
 .word.long { white-space: nowrap; }
-.word.long .ch {
+/* Only while lit (see syncLongWord): unlit, the letters are plain text */
+.word.long.glowing .ch {
   --lit: calc(var(--f, 0) * var(--g, 0));
   display: inline-block;
   transform: translateY(calc(var(--lit) * -0.06em)) scale(calc(1 + var(--lit) * 0.035));

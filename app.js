@@ -21,15 +21,14 @@ const CHARTS_URL = `${REQUEST_API}/charts`;
 // within a couple of seconds; with them, just for the listener count and recently played
 const POLL_MS = 2000;
 const LIVE_POLL_MS = 10000;
-// Listeners hear the stream a little behind the feed, so titles, progress and lyrics are held
-// back to match. While playing, the app works out the delay from the stream itself; this is the
-// guess used when it isn't playing (typical when playing: about 4.3 s, mostly the burst below).
-const DEFAULT_LISTEN_DELAY = 4.3;
+// Listeners hear the stream a little behind the feed, so while they listen, titles, progress and
+// lyrics are held back to match: the app works out the delay from the stream itself. When nobody's
+// listening on this device, it shows the feed's own timing.
 // Icecast sends this much audio from just before "now" when a player connects, so playback can
-// start at once (burst-size 64 KB: 4 s at 128 kbps, twice that on the data saver stream).
-// Keep this in step with burst-size in the server's icecast.xml: on iPhones and iPads it's how the
-// app knows how far behind live the listener is, and so when to show each lyric.
-const BURST_SECONDS = 1;
+// start at once (burst-size 64 KB: 4 s at 128 kbps, twice that on the data saver stream). The app
+// measures it whenever it downloads the stream itself (see measureBurst), so this is only used by
+// the plain player (old iPhones) until the first measurement on that device.
+const BURST_SECONDS = 4;
 // Audio reaches listeners about this long after the AutoDJ starts it (measured: 0.1 to 0.25 s)
 const STREAM_LATENCY = 0.15;
 // How long connecting to the stream takes before audio arrives, until the feed has been timed
@@ -135,7 +134,7 @@ let feed = null;
 let shownKey;
 let shownTrack = null;
 let historySig = '';
-let listenDelay = DEFAULT_LISTEN_DELAY;
+let listenDelay = 0; // not listening yet: show what's on air
 let clockOffset = 0;
 const clockSamples = [];
 const roundTrips = []; // how long recent feed requests took, a guide to how long connecting takes
@@ -167,9 +166,13 @@ function timeAgo(ts) {
 // Where the browser allows it, the app downloads the stream itself and hands it to the player
 // (Media Source Extensions). Playback then starts as soon as the first second arrives, rather than
 // after the several seconds Chrome otherwise collects first, and the app knows exactly which moment
-// of the broadcast is playing. iPhones and iPads keep the plain player, which carries on playing
-// in the background.
-let useMediaSource = !isIOS && typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('audio/mpeg');
+// of the broadcast is playing. iPhones (iOS 17.1 and later) do the same through Apple's
+// ManagedMediaSource. If that stalls while the phone is locked or the app is in the background,
+// the app switches to the plain player for the rest of the visit, which always plays on in the
+// background (see 'waiting' below). Older iPhones, and other browsers without it, use the plain player.
+const MediaSourceKind = (isIOS && window.ManagedMediaSource) || window.MediaSource || window.ManagedMediaSource;
+const managedSource = !!MediaSourceKind && MediaSourceKind === window.ManagedMediaSource;
+let useMediaSource = !!MediaSourceKind && MediaSourceKind.isTypeSupported('audio/mpeg');
 let connection = null; // timing for the current connection, used to work out the listening delay
 const clock = () => performance.now() / 1000; // steady seconds, unaffected by clock changes
 
@@ -187,7 +190,54 @@ function onMobileData() {
 }
 
 const useLowStream = () => !lowUnavailable && (saverSetting === 'on' || (saverSetting === 'auto' && onMobileData()));
-const burstSeconds = () => (connection && connection.low ? BURST_SECONDS * 2 : BURST_SECONDS);
+// The burst, as last measured on this device (see measureBurst), or else as configured
+function burstSeconds() {
+  const low = !!(connection && connection.low);
+  try {
+    const measured = parseFloat(localStorage.getItem(low ? 'taco-burst-low' : 'taco-burst'));
+    if (measured >= 0 && measured < 30) return measured;
+  } catch { /* storage unavailable */ }
+  return low ? BURST_SECONDS * 2 : BURST_SECONDS;
+}
+
+// Where the app downloads the stream itself, it can see the burst: after the first moments, the
+// audio received less the time it took to arrive. Remembered for the plain player, which can't see
+// it, so its listening delay stays right whatever the server's burst-size is set to.
+function measureBurst(conn, end) {
+  if (conn.burstMeasured || !conn.firstByteAt) return;
+  const took = conn.lastArrival - conn.firstByteAt;
+  if (took < 1.5) return;
+  conn.burstMeasured = true;
+  const burst = Math.max(0, end - took);
+  try { localStorage.setItem(conn.low ? 'taco-burst-low' : 'taco-burst', burst.toFixed(2)); } catch { /* storage unavailable */ }
+}
+
+// ---- Playback profiles: phones and computers tuned separately ----
+// Icecast sends a few seconds of audio from before "now" when a player connects (the burst), so the
+// plain player (iPhones and iPads) can start at once; it then plays that far behind live. Where the
+// app downloads the stream itself (Media Source), it chooses instead: it keeps only `buffer`
+// seconds in hand, skipping the rest of the burst, so the music starts at once and close to live.
+// - Computers on a steady connection keep little in hand: near live, quick to recover.
+// - Phones keep more, so a weak signal or a hand-over between masts doesn't stop the music.
+// - On mobile data, more again.
+// If playback drifts further behind (after a stall), it catches up by playing 4% faster (the pitch
+// stays the same) once it's `catchUp` seconds behind, or skips ahead past `jump` seconds.
+// `retry` is how long to wait before reconnecting after a drop, growing if it keeps failing;
+// `delayGuess` is the listening delay assumed while not playing.
+const isMobile = isIOS || /Android|Mobi/i.test(navigator.userAgent) || !!(navigator.userAgentData && navigator.userAgentData.mobile);
+const PROFILES = {
+  computer: { name: 'computer', buffer: 1.5, catchUp: 3, jump: 8, retry: [1000, 2500, 5000], delayGuess: 1.7 },
+  phone: { name: 'phone', buffer: 3, catchUp: 6, jump: 14, retry: [700, 2000, 5000], delayGuess: 3.2 },
+  mobileData: { name: 'mobile data', buffer: 4.5, catchUp: 9, jump: 20, retry: [700, 2000, 5000], delayGuess: 4.7 },
+  // The plain player keeps what it likes; only reconnecting and the delay guess are ours
+  plain: { name: 'plain player', retry: [1000, 2500, 5000], delayGuess: 4.3 },
+};
+function playbackProfile() {
+  if (!useMediaSource) return PROFILES.plain;
+  if (!isMobile) return onMobileData() ? PROFILES.mobileData : PROFILES.computer;
+  return onMobileData() ? PROFILES.mobileData : PROFILES.phone;
+}
+let retries = 0; // reconnections in a row without playing in between
 
 function setState(state) {
   for (const button of [els.play, els.lvPlay]) {
@@ -243,6 +293,8 @@ async function pumpStream(source, conn, response) {
       // moment the stream started. Pieces held up on the way only make it later, so keep the earliest.
       conn.origin = Math.min(conn.origin, appendedAt - buffered.end(buffered.length - 1));
       appendedAt = 0;
+      measureBurst(conn, buffered.end(buffered.length - 1));
+      keepNearLive(buffered, conn);
     }
     appendNext();
   });
@@ -254,21 +306,52 @@ async function pumpStream(source, conn, response) {
     const { done, value } = await reader.read();
     if (done) throw new Error('The stream ended');
     conn.lastArrival = clock();
+    if (!conn.firstByteAt) conn.firstByteAt = conn.lastArrival;
     pending.push(value);
     appendNext();
   }
 }
 
+// Hold only the profile's `buffer` seconds in hand: skip most of the burst at the start, and catch up
+// if playback has fallen behind since (see the profiles above)
+function keepNearLive(buffered, conn) {
+  const p = conn.profile;
+  const end = buffered.end(buffered.length - 1);
+  const ahead = end - audio.currentTime;
+  // The burst arrives in a few pieces over the first moments: skip ahead as each one lands
+  if (!conn.firstAudioAt) conn.firstAudioAt = clock();
+  if (clock() - conn.firstAudioAt < 2) {
+    if (ahead > p.buffer + 0.25) audio.currentTime = end - p.buffer;
+    return;
+  }
+  if (audio.paused || audio.seeking) return;
+  if (ahead > p.jump) {
+    audio.currentTime = end - p.buffer;
+    audio.playbackRate = 1;
+  } else if (ahead > p.catchUp) {
+    audio.playbackRate = 1.04;
+  } else if (ahead < p.buffer + 0.3 && audio.playbackRate !== 1) {
+    audio.playbackRate = 1;
+  }
+}
+
 function connectMediaSource() {
-  const source = new MediaSource();
-  const conn = { abort: new AbortController(), origin: Infinity, lastArrival: 0, played: false, mediaSource: true, low: useLowStream() };
+  const source = new MediaSourceKind();
+  const conn = { abort: new AbortController(), origin: Infinity, lastArrival: 0, played: false, mediaSource: true, low: useLowStream(), profile: playbackProfile(), firstAudioAt: 0 };
   connection = conn;
   // Ask for the stream straight away, while the player is still getting ready for it
   const response = fetch(`${conn.low ? STREAM_URL_LOW : STREAM_URL}?t=${Date.now()}`, { signal: conn.abort.signal, cache: 'no-store' });
   response.catch(() => {}); // handled once the player is ready
-  audio.src = URL.createObjectURL(source);
+  if (managedSource) {
+    // Apple's version only opens for a player that won't be sent to AirPlay as a stream (the
+    // phone's own AirPlay of its sound still works)
+    audio.disableRemotePlayback = true;
+    audio.srcObject = source;
+  } else {
+    audio.src = URL.createObjectURL(source);
+  }
   source.addEventListener('sourceopen', () => {
-    URL.revokeObjectURL(audio.src);
+    if (!managedSource) URL.revokeObjectURL(audio.src);
     pumpStream(source, conn, response).catch(() => {
       if (connection === conn) reconnect();
     });
@@ -281,6 +364,7 @@ function play() {
   els.notice.textContent = '';
   setState('loading');
   closeConnection();
+  audio.playbackRate = 1;
   // A fresh connection every time, so playback always starts at the live point
   if (useMediaSource) {
     connectMediaSource();
@@ -288,6 +372,7 @@ function play() {
   } else {
     const low = useLowStream();
     connection = { requestedAt: clock(), played: false, low };
+    if ('srcObject' in audio) audio.srcObject = null;
     audio.src = `${low ? STREAM_URL_LOW : STREAM_URL}?t=${Date.now()}`;
   }
   audio.play().catch((err) => {
@@ -305,15 +390,22 @@ function stop() {
   closeConnection();
   audio.pause();
   audio.removeAttribute('src');
+  if ('srcObject' in audio) audio.srcObject = null;
   audio.load();
   els.notice.textContent = '';
   setState('idle');
 }
 
 // How far behind the broadcast this listener is hearing, in seconds
+// When not listening, the app shows what's on air now, exactly as the now-playing feed has it
+// (elapsed time, song changes, lyrics); while listening, what this listener hears.
 function measureListenDelay() {
-  if (!wantPlaying || !connection) {
-    listenDelay = DEFAULT_LISTEN_DELAY;
+  if (!wantPlaying) {
+    listenDelay = 0;
+    return;
+  }
+  if (!connection) {
+    listenDelay = playbackProfile().delayGuess;
     return;
   }
   let behind = null;
@@ -340,11 +432,14 @@ function reconnect() {
   setState('loading');
   els.notice.textContent = 'Connection lost. Reconnecting…';
   clearTimeout(retryTimer);
-  retryTimer = setTimeout(play, 3000);
+  const { retry } = playbackProfile();
+  retryTimer = setTimeout(play, retry[Math.min(retries, retry.length - 1)]);
+  retries += 1;
 }
 
 els.play.addEventListener('click', () => (wantPlaying ? stop() : play()));
 audio.addEventListener('playing', () => {
+  retries = 0;
   els.notice.textContent = '';
   setState('playing');
   startAudioGraph();
@@ -364,6 +459,19 @@ audio.addEventListener('playing', () => {
 });
 audio.addEventListener('waiting', () => {
   if (wantPlaying) setState('loading');
+  // On iPhones, if the downloaded stream stalls in the background, use the plain player from now on,
+  // which iOS always lets play on with the phone locked
+  if (wantPlaying && isIOS && document.hidden && connection && connection.mediaSource) {
+    useMediaSource = false;
+    play();
+  }
+});
+// The same if iOS pauses it in the background by itself (the listener's own pause goes through stop())
+audio.addEventListener('pause', () => {
+  if (wantPlaying && isIOS && document.hidden && connection && connection.mediaSource) {
+    useMediaSource = false;
+    play();
+  }
 });
 audio.addEventListener('error', reconnect);
 audio.addEventListener('ended', reconnect);
@@ -402,7 +510,8 @@ let vizColourAt = 0;
 const VIZ_BARS = 28;
 
 function startAudioGraph() {
-  if (!audioGraph && useMediaSource && !reduceMotion && typeof AudioContext !== 'undefined') {
+  // Not on iPhones and iPads: sound going through Web Audio there stops when the phone is locked
+  if (!audioGraph && useMediaSource && !isIOS && !reduceMotion && typeof AudioContext !== 'undefined') {
     try {
       const ctx = new AudioContext();
       const source = ctx.createMediaElementSource(audio);
@@ -572,6 +681,11 @@ function listenForBeat(t, dt) {
 
 function drawAmbient(t) {
   ambient.frame = 0;
+  // Phones redraw at most 30 times a second, to save battery
+  if (isMobile && ambient.last && t - ambient.last < 30 && ambient.beat < 0.05) {
+    ambient.frame = requestAnimationFrame(drawAmbient);
+    return;
+  }
   const dt = Math.min(0.1, (t - (ambient.last || t)) / 1000);
   ambient.last = t;
   listenForBeat(t, dt);
@@ -676,6 +790,8 @@ function renderSaver() {
 // reconnect now if a reconnection was waiting anyway
 function saverChanged() {
   renderSaver();
+  // Moving between Wi-Fi and mobile data changes how much to keep in hand, from now on
+  if (connection && connection.mediaSource) connection.profile = playbackProfile();
   if (wantPlaying && (!connection || !!connection.low !== useLowStream())) play();
 }
 
@@ -688,6 +804,11 @@ function setSaver(value) {
 if (navigator.connection && navigator.connection.addEventListener) {
   navigator.connection.addEventListener('change', saverChanged);
 }
+
+// Back online (out of a tunnel, say): reconnect now rather than when the wait is up
+window.addEventListener('online', () => {
+  if (wantPlaying && retries) play();
+});
 
 // ---- Menus (sleep timer, and "more": data saver, installing, station admin) ----
 
